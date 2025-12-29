@@ -144,12 +144,6 @@ const User = sequelize.define('User', {
     defaultValue: {},
     comment: 'Object tracking progress per slot: { "1": 300, "2": 100, "3": 200 }'
   },
-  // In your User model, add this field:
-fcmToken: {
-  type: DataTypes.STRING(500),
-  allowNull: true,
-  comment: 'Firebase Cloud Messaging token for push notifications'
-},
 }, {
   timestamps: true,
   tableName: 'users',

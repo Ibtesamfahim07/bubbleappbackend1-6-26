@@ -31,12 +31,6 @@ const Giveaway = sequelize.define('Giveaway', {
     type: DataTypes.DATE,
     allowNull: true
   },
-  // NEW: Allow admin to enable/disable specific giveaway categories
-  isActive: {
-    type: DataTypes.BOOLEAN,
-    allowNull: false,
-    defaultValue: true
-  },
   setByAdminId: {
     type: DataTypes.INTEGER,
     allowNull: true,
@@ -47,7 +41,7 @@ const Giveaway = sequelize.define('Giveaway', {
     onDelete: 'SET NULL'
   }
 }, {
-  tableName: 'giveaways',
+  tableName: 'giveaways',  // ← lowercase 'g' to match DB
   timestamps: true,
   indexes: [
     {

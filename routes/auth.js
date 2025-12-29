@@ -8,6 +8,7 @@ const auth = require('../middleware/auth');
 const router = express.Router();
 
 // Signup
+// routes/auth.js - COMPLETE signup response
 router.post('/signup', async (req, res) => {
   try {
     const { 
@@ -35,6 +36,7 @@ router.post('/signup', async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // ✅ Create user with ALL default values explicitly set
     const user = await User.create({
       name,
       email,
@@ -45,41 +47,71 @@ router.post('/signup', async (req, res) => {
       province: province || null,
       city: city || null,
       area: area || null,
-      role: 'user' // Default role
+      role: 'user',
+      bubblesCount: 0,           // ✅ Explicit
+      walletBalance: 0.00,       // ✅ Explicit
+      queuePosition: 0,          // ✅ Explicit
+      queueBubbles: 0,           // ✅ Explicit
+      requiredBubbles: 400,      // ✅ Explicit
+      queueSlots: 0,             // ✅ Explicit
+      slotProgress: {},          // ✅ Explicit
+      bubbleGoal: 0,             // ✅ Explicit
+      bubblesReceived: 0,        // ✅ Explicit
+      goalActive: false,         // ✅ Explicit
+      isActive: true,            // ✅ Explicit
+      fcmToken: null             // ✅ Explicit
     });
 
     const token = jwt.sign(
       { 
         id: user.id, 
         email: user.email,
-        role: user.role // Include role in token
+        role: user.role
       },
       process.env.JWT_SECRET,
       { expiresIn: '30d' }
     );
 
+    console.log('✅ Signup successful for:', user.email);
+
+    // ✅ Return COMPLETE user object (same as login)
     res.json({
+      success: true,
       message: 'User created successfully',
       token,
       user: {
         id: user.id,
         name: user.name,
         email: user.email,
-        walletBalance: user.walletBalance,
+        walletBalance: parseFloat(user.walletBalance),
         bubblesCount: user.bubblesCount,
-        lat: user.lat,
-        lng: user.lng,
+        lat: parseFloat(user.lat),
+        lng: parseFloat(user.lng),
         country: user.country,
         province: user.province,
         city: user.city,
         area: user.area,
         queuePosition: user.queuePosition,
-        role: user.role // Include role in response
+        queueBubbles: user.queueBubbles,
+        requiredBubbles: user.requiredBubbles,
+        queueSlots: user.queueSlots,
+        slotProgress: user.slotProgress,
+        bubbleGoal: user.bubbleGoal,
+        bubblesReceived: user.bubblesReceived,
+        goalDescription: user.goalDescription,
+        goalActive: user.goalActive,
+        role: user.role,
+        isActive: user.isActive,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt
       }
     });
   } catch (error) {
-    console.error('Signup error:', error);
-    res.status(400).json({ message: error.message });
+    console.error('❌ Signup error:', error);
+    res.status(400).json({ 
+      success: false,
+      message: error.message 
+    });
   }
 });
 

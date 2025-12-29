@@ -1,12 +1,11 @@
-// models/index.js - Updated with Notification
+// models/index.js - FIXED VERSION with correct aliases
 const User = require('./User');
 const WalletTransaction = require('./WalletTransaction');
 const BubbleTransaction = require('./BubbleTransaction');
 const Brand = require('./Brand');
 const Offer = require('./Offer');
 const OfferRequest = require('./OfferRequest');
-const Giveaway = require('./Giveaway');
-const Notification = require('./Notification');
+const Giveaway = require('./Giveaway');   // ← NEW
 
 // User and Wallet Associations
 User.hasMany(WalletTransaction, { foreignKey: 'userId' });
@@ -18,10 +17,10 @@ User.hasMany(BubbleTransaction, { as: 'incomingBubbles', foreignKey: 'toUserId' 
 BubbleTransaction.belongsTo(User, { as: 'fromUser', foreignKey: 'fromUserId' });
 BubbleTransaction.belongsTo(User, { as: 'toUser', foreignKey: 'toUserId' });
 
-// Brand and Offer Associations
+// Brand and Offer Associations - FIXED ALIASES
 Brand.hasMany(Offer, { 
   foreignKey: 'brandId',
-  as: 'Offers'
+  as: 'Offers'  // Changed from 'offers' to 'Offers'
 });
 
 Offer.belongsTo(Brand, { 
@@ -29,7 +28,7 @@ Offer.belongsTo(Brand, {
   as: 'Brand'
 });
 
-// User, Brand, Offer and OfferRequest Associations
+// User, Brand, Offer and OfferRequest Associations - FIXED ALIASES
 User.hasMany(OfferRequest, { 
   foreignKey: 'userId',
   as: 'OfferRequests'
@@ -60,17 +59,6 @@ OfferRequest.belongsTo(Offer, {
   as: 'Offer'
 });
 
-// User and Notification Associations
-User.hasMany(Notification, {
-  foreignKey: 'userId',
-  as: 'Notifications'
-});
-
-Notification.belongsTo(User, {
-  foreignKey: 'userId',
-  as: 'User'
-});
-
 module.exports = { 
   User, 
   WalletTransaction, 
@@ -78,6 +66,5 @@ module.exports = {
   Brand, 
   Offer, 
   OfferRequest,
-  Giveaway,
-  Notification
+  Giveaway
 };

@@ -8,7 +8,6 @@ const getRoutes = require('./routes/get');
 const makeRoutes = require('./routes/make');
 const backRoutes = require('./routes/back');
 const adminRoutes = require('./routes/admin');
-const notificationRoutes = require('./routes/notification');
 
 const app = express();
 
@@ -45,7 +44,6 @@ app.use('/get', getRoutes);
 app.use('/make', makeRoutes);
 app.use('/back', backRoutes);
 app.use('/admin', adminRoutes);
-app.use('/notifications', notificationRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -60,8 +58,7 @@ app.get('/', (req, res) => {
       get: '/get (nearby)',
       make: '/make (request)',
       back: '/back (return)',
-      admin: '/admin',
-      notifications: '/notifications (fcm-token, test)'
+      admin: '/admin'
     }
   });
 });
@@ -173,8 +170,6 @@ else {
         console.log('   POST /auth/signup');
         console.log('   POST /auth/login');
         console.log('   GET  /get/nearby');
-        console.log('   POST /notifications/fcm-token');
-        console.log('   POST /notifications/test');
         
         console.log('\n✨ Ready for development!\n');
       });

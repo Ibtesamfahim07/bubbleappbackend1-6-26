@@ -1,4 +1,4 @@
-// routes/get.js - FIXED VERSION with slotProgress validation
+// routes/get.js - COMPLETE FIXED VERSION
 const express = require('express');
 const auth = require('../middleware/auth');
 const { User, BubbleTransaction, Giveaway } = require('../models');
@@ -7,110 +7,6 @@ const sequelize = require('../config/database');
 
 const router = express.Router();
 router.use(auth);
-
-// ============================================================
-// CRITICAL FIX: SlotProgress Validation Helper
-// ============================================================
-function validateAndFixSlotProgress(slotProgress, queueSlots) {
-  console.log('🔍 Validating slotProgress:', typeof slotProgress, slotProgress);
-  
-  let parsed = slotProgress;
-  
-  // Handle null/undefined
-  if (!parsed) {
-    console.log('⚠️ slotProgress is null/undefined, initializing empty object');
-    parsed = {};
-  }
-  
-  // Handle string - parse JSON (possibly multiple times if double-stringified)
-  let parseAttempts = 0;
-  while (typeof parsed === 'string' && parseAttempts < 3) {
-    parseAttempts++;
-    try {
-      parsed = JSON.parse(parsed);
-      console.log(`✅ JSON parse attempt ${parseAttempts} succeeded`);
-    } catch (e) {
-      console.error(`❌ JSON parse attempt ${parseAttempts} failed:`, e.message);
-      parsed = {};
-      break;
-    }
-  }
-  
-  // If still a string after multiple parses, reset
-  if (typeof parsed === 'string') {
-    console.error('❌ slotProgress still a string after parsing, resetting');
-    parsed = {};
-  }
-  
-  // If not an object, reset
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    console.error('❌ slotProgress is not a valid object, resetting');
-    parsed = {};
-  }
-  
-  // Check for corruption: if any value is a single character or non-numeric string
-  const keys = Object.keys(parsed);
-  let isCorrupted = false;
-  
-  // Corruption detection: too many keys (character-by-character corruption)
-  if (keys.length > queueSlots + 5) {
-    console.error(`❌ CORRUPTION DETECTED: Too many keys (${keys.length}) for ${queueSlots} slots`);
-    isCorrupted = true;
-  }
-  
-  // Corruption detection: values are single characters
-  if (!isCorrupted) {
-    for (const key of keys) {
-      const value = parsed[key];
-      if (typeof value === 'string' && value.length === 1 && isNaN(parseInt(value))) {
-        console.error(`❌ CORRUPTION DETECTED: Key "${key}" has single char value "${value}"`);
-        isCorrupted = true;
-        break;
-      }
-    }
-  }
-  
-  // If corrupted, reset entirely
-  if (isCorrupted) {
-    console.log('🔄 Resetting corrupted slotProgress to clean state');
-    parsed = {};
-  }
-  
-  // Build valid progress object with only valid slots
-  const validProgress = {};
-  const slots = parseInt(queueSlots) || 0;
-  
-  for (let i = 1; i <= slots; i++) {
-    const key = i.toString();
-    const value = parsed[key];
-    
-    if (typeof value === 'number' && !isNaN(value) && value >= 0 && value <= 400) {
-      validProgress[key] = Math.floor(value);
-    } else if (typeof value === 'string') {
-      const num = parseInt(value, 10);
-      if (!isNaN(num) && num >= 0 && num <= 400) {
-        validProgress[key] = num;
-      } else {
-        validProgress[key] = 0;
-      }
-    } else {
-      validProgress[key] = 0;
-    }
-  }
-  
-  console.log('✅ Validated slotProgress:', validProgress);
-  return validProgress;
-}
-
-// ============================================================
-// Helper: Stringify slotProgress for database storage
-// ============================================================
-function stringifySlotProgress(slotProgress) {
-  if (typeof slotProgress === 'string') {
-    return slotProgress;
-  }
-  return JSON.stringify(slotProgress);
-}
 
 // Helper functions
 async function getCitiesWithUsers() {
@@ -236,29 +132,7 @@ router.get('/nearby', async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    console.log('Current user:', {
-      id: currentUser.id,
-      name: currentUser.name,
-      queuePosition: currentUser.queuePosition
-    });
-
-    // ✅ CHECK IF CURRENT USER HAS EVER SUPPORTED ANYONE
-    const supportTransaction = await BubbleTransaction.findOne({
-      where: {
-        fromUserId: req.user.id,
-        type: 'support',
-        status: 'completed'
-      }
-    });
-
-    const hasSupported = !!supportTransaction;
-    const currentUserInQueue = currentUser.queuePosition > 0;
-
-    console.log('🔍 SUPPORT CHECK:', {
-      hasSupported: hasSupported,
-      inQueue: currentUserInQueue,
-      queuePosition: currentUser.queuePosition
-    });
+    console.log('Current user - Pos:', currentUser.queuePosition, '| Slots:', currentUser.queueSlots);
 
     const distanceFormula = literal(`(
       6371 * acos(
@@ -268,6 +142,7 @@ router.get('/nearby', async (req, res) => {
       )
     )`);
     
+    // CRITICAL: queueSlots > 0
     let where = {
       id: { [Op.ne]: req.user.id },
       bubblesCount: { [Op.gt]: 0 },
@@ -287,58 +162,33 @@ router.get('/nearby', async (req, res) => {
 
     const users = await User.findAll({
       attributes: ['id', 'name', 'lat', 'lng', 'bubblesCount', 'city', 'area', 
-                   'queuePosition', 'queueSlots', 'slotProgress', 'createdAt', [distanceFormula, 'distance']],
+                   'queuePosition', 'queueSlots', 'slotProgress', [distanceFormula, 'distance']],
       where,
       having: literal(`distance < ${searchRadius}`),
       order: [['queuePosition', 'ASC']],
       limit: 50
     });
     
-    console.log(`Found ${users.length} users in queue`);
-
-    // ✅ FILTERING LOGIC BASED ON SUPPORT STATUS
+    console.log(`Found ${users.length} users with queueSlots > 0`);
+    
+    const myPos = parseInt(currentUser.queuePosition) || 0;
     const filtered = [];
 
     for (const u of users) {
       const uSlots = parseInt(u.queueSlots) || 0;
-      const uQueuePos = parseInt(u.queuePosition) || 0;
+      const uPos = parseInt(u.queuePosition) || 0;
       
       if (uSlots <= 0) continue;
       
-      // ✅ FRESH USER (never supported anyone): Only show Queue #1
-      if (!hasSupported) {
-        if (uQueuePos === 1) {
-          filtered.push(u);
-          console.log(`✅ FRESH USER - Showing Queue #1: ${u.name}`);
-        } else {
-          console.log(`❌ FRESH USER - Hiding ${u.name} (Queue #${uQueuePos}) - must support Queue #1 first`);
-        }
-      } 
-      // ✅ USER WHO HAS SUPPORTED: Show all users above them (lower queue positions)
-      else {
-        if (currentUserInQueue && currentUser.queuePosition > 0) {
-          // User is in queue - show users with LOWER queue positions only
-          if (uQueuePos < currentUser.queuePosition) {
-            filtered.push(u);
-            console.log(`✅ IN QUEUE - Showing ${u.name} (Queue #${uQueuePos}) - above current user (Queue #${currentUser.queuePosition})`);
-          } else {
-            console.log(`❌ IN QUEUE - Hiding ${u.name} (Queue #${uQueuePos}) - not above current user (Queue #${currentUser.queuePosition})`);
-          }
-        } else {
-          // User has supported but not in queue (edge case) - show Queue #1 only
-          if (uQueuePos === 1) {
-            filtered.push(u);
-            console.log(`✅ SUPPORTED BUT NOT IN QUEUE - Showing Queue #1: ${u.name}`);
-          } else {
-            console.log(`❌ SUPPORTED BUT NOT IN QUEUE - Hiding ${u.name} (Queue #${uQueuePos})`);
-          }
-        }
+      if (myPos === 0) {
+        if (uPos === 1) filtered.push(u);
+      } else {
+        if (uPos < myPos) filtered.push(u);
       }
     }
 
-    console.log(`After filter: ${filtered.length} users visible to current user (hasSupported: ${hasSupported})`);
+    console.log(`After filter: ${filtered.length} users`);
 
-    // Build cards from filtered users
     const cards = [];
 
     for (const u of filtered) {
@@ -346,24 +196,23 @@ router.get('/nearby', async (req, res) => {
       const basePos = parseInt(u.queuePosition) || 0;
       const dist = parseFloat(u.getDataValue('distance')).toFixed(1);
 
-      const progress = validateAndFixSlotProgress(u.slotProgress, slots);
-      
-      console.log(`📊 User ${u.name} validated slotProgress:`, progress);
+      let progress = {};
+      try { progress = u.slotProgress ? JSON.parse(u.slotProgress) : {}; } catch(e) {}
 
       const loc = [u.area, u.city].filter(Boolean).join(', ') || 'Unknown';
 
       for (let i = 0; i < slots; i++) {
         const slotNum = i + 1;
         const slotPos = basePos + i;
-        const prog = progress[slotNum.toString()] || 0;
+        const prog = parseInt(progress[slotNum.toString()]) || 0;
         const pct = Math.round((prog / 400) * 100);
-        
-        console.log(`  Slot ${slotNum}: progress = ${prog}/400 (${pct}%)`);
 
         let color = '#10b981';
         if (slotPos === 1) color = '#ef4444';
         else if (slotPos <= 5) color = '#f59e0b';
         else if (slotPos <= 10) color = '#3b82f6';
+
+        console.log(`  ${u.name} Slot ${slotNum}: Queue #${slotPos}, Progress ${prog}/400`);
 
         cards.push({
           id: `${u.id}-slot-${i}`,
@@ -421,23 +270,25 @@ router.get('/incomplete-queue', async (req, res) => {
     const qPos = parseInt(user.queuePosition) || 0;
     const qSlots = parseInt(user.queueSlots) || 0;
     
-    console.log('Queue Position:', qPos, '| Slots:', qSlots, '| Raw SlotProgress:', user.slotProgress);
+    console.log('Queue Position:', qPos, '| Slots:', qSlots, '| SlotProgress:', user.slotProgress);
     
     if (qPos === 0 || qSlots === 0) {
       console.log('Not in queue or no slots');
       return res.json([]);
     }
 
-    // ✅ FIXED: Use validation helper
-    const slotProgress = validateAndFixSlotProgress(user.slotProgress, qSlots);
+    let slotProgress = {};
+    try {
+      slotProgress = user.slotProgress ? JSON.parse(user.slotProgress) : {};
+    } catch (e) { slotProgress = {}; }
     
-    console.log('Validated progress:', slotProgress);
+    console.log('Parsed progress:', slotProgress);
 
     const cards = [];
     const REQUIRED = 400;
 
     for (let slotNum = 1; slotNum <= qSlots; slotNum++) {
-      const progress = slotProgress[slotNum.toString()] || 0;
+      const progress = parseInt(slotProgress[slotNum.toString()]) || 0;
       
       if (progress < REQUIRED) {
         const pct = Math.round((progress / REQUIRED) * 100);
@@ -716,13 +567,14 @@ router.get('/completed-separate', async (req, res) => {
 router.get('/completed-cumulative', async (req, res) => {
   try {
     console.log('Backend - Getting cumulative completed for user:', req.user.id);
-    const { location } = req.query;
+    const { location } = req.query; // Add location parameter
     
     const currentUser = await User.findByPk(req.user.id);
     if (!currentUser) {
       return res.status(404).json({ message: 'User not found' });
     }
 
+    // Get received transactions
     const receivedTransactions = await BubbleTransaction.findAll({
       where: {
         toUserId: req.user.id,
@@ -739,6 +591,7 @@ router.get('/completed-cumulative', async (req, res) => {
       return res.json([]);
     }
 
+    // Get all supporters with their individual contributions
     const supporterMap = new Map();
     for (const tx of receivedTransactions) {
       const supporterId = tx.fromUserId;
@@ -776,6 +629,7 @@ router.get('/completed-cumulative', async (req, res) => {
 
     let supporters = Array.from(supporterMap.values());
     
+    // Apply location filter if provided
     if (location && location !== 'All') {
       console.log(`Backend - Applying location filter to supporters: "${location}"`);
       
@@ -788,6 +642,7 @@ router.get('/completed-cumulative', async (req, res) => {
         if (isCity) {
           return supporter.city === location;
         } else {
+          // Check area or any location field
           return supporter.area === location || 
                  supporter.city === location || 
                  supporter.province === location ||
@@ -800,6 +655,7 @@ router.get('/completed-cumulative', async (req, res) => {
 
     supporters.sort((a, b) => b.totalSupported - a.totalSupported);
 
+    // Calculate filtered totals
     const filteredTotalSupport = supporters.reduce((sum, s) => sum + s.totalSupported, 0);
     const filteredTotalSupporters = supporters.length;
 
@@ -815,9 +671,11 @@ router.get('/completed-cumulative', async (req, res) => {
       description: `${completedSlots} Completed Slots • ${totalCompleted} bubbles`,
       status: 'completed',
       isCumulative: true,
+      // Add filtered supporters data
       supporters: supporters,
       totalSupporters: filteredTotalSupporters,
       totalSupport: filteredTotalSupport,
+      // Include location filter info
       locationFilter: location || 'All'
     }]);
   } catch (error) {
@@ -1001,6 +859,7 @@ router.get('/completed', async (req, res) => {
   try {
     console.log('Backend - Getting completed transactions for user:', req.user.id);
     
+    // Get ALL transactions (not grouped)
     const allTransactions = await BubbleTransaction.findAll({
       where: {
         [Op.or]: [
@@ -1034,9 +893,11 @@ router.get('/completed', async (req, res) => {
         isDonation = true;
         type = 'donation';
         
+        // For giveaway distributions (user received)
         if (!isSent) {
           description = 'Free Giveaway';
         } 
+        // For giveaway donations (user donated)
         else {
           description = 'Donated to Giveaway';
         }
@@ -1048,10 +909,11 @@ router.get('/completed', async (req, res) => {
           : `Received ${transaction.bubbleAmount} bubbles`;
       }
       
+      // Add transaction count information (always 1 for individual transactions)
       const transactionCount = 1;
       
       enrichedTransactions.push({
-        id: transaction.id,
+        id: transaction.id, // Use actual transaction ID
         userId: otherUserId,
         userName: otherUser ? otherUser.name : 'Unknown User',
         bubbleAmount: transaction.bubbleAmount,
@@ -1064,8 +926,9 @@ router.get('/completed', async (req, res) => {
         updatedAt: transaction.updatedAt,
         isReceived: !isSent,
         isDonation: isDonation,
+        // For support transactions, show "to/from" info
         isSupport: type === 'support',
-        targetSlotNumber: transaction.targetSlotNumber
+        targetSlotNumber: transaction.targetSlotNumber // Keep slot info if available
       });
     }
     
@@ -1164,6 +1027,7 @@ router.post('/support', async (req, res) => {
     console.log('========================================');
     console.log('From:', req.user.id, '| To:', toUserId, '| Amount:', bubbleAmount, '| Slot:', targetSlotNumber);
     
+    // Validations
     if (!toUserId || !bubbleAmount) {
       await t.rollback();
       return res.status(400).json({ message: 'User ID and bubble amount are required' });
@@ -1181,6 +1045,7 @@ router.post('/support', async (req, res) => {
       return res.status(400).json({ message: 'Target slot number is required' });
     }
     
+    // Fetch users with lock
     const fromUser = await User.findByPk(req.user.id, { transaction: t, lock: t.LOCK.UPDATE });
     const toUser = await User.findByPk(toUserId, { transaction: t, lock: t.LOCK.UPDATE });
     
@@ -1189,13 +1054,14 @@ router.post('/support', async (req, res) => {
     
     console.log('FROM:', fromUser.name, '| Bubbles:', fromUser.bubblesCount, '| Pos:', fromUser.queuePosition, '| Slots:', fromUser.queueSlots);
     console.log('TO:', toUser.name, '| Bubbles:', toUser.bubblesCount, '| Pos:', toUser.queuePosition, '| Slots:', toUser.queueSlots);
-    console.log('TO Raw slotProgress:', toUser.slotProgress);
     
+    // Check bubbles
     if (fromUser.bubblesCount < bubbleAmount) {
       await t.rollback();
       return res.status(400).json({ message: `Insufficient bubbles. Have ${fromUser.bubblesCount}, need ${bubbleAmount}` });
     }
 
+    // Validate slot
     if (toUser.queueSlots <= 0) {
       await t.rollback();
       return res.status(400).json({ message: 'Target user has no queue slots' });
@@ -1205,6 +1071,7 @@ router.post('/support', async (req, res) => {
       return res.status(400).json({ message: `Invalid slot. User has ${toUser.queueSlots} slots` });
     }
     
+    // Queue position validation
     if (fromUser.queuePosition === 0) {
       if (toUser.queuePosition !== 1) {
         await t.rollback();
@@ -1217,35 +1084,49 @@ router.post('/support', async (req, res) => {
       }
     }
     
-    // ✅ CRITICAL FIX: Use validation helper for receiver
-    let toSlotProgress = validateAndFixSlotProgress(toUser.slotProgress, toUser.queueSlots);
-    console.log('TO Validated slotProgress:', toSlotProgress);
+    // Parse receiver's slot progress
+    let toSlotProgress = {};
+    try {
+      toSlotProgress = toUser.slotProgress ? JSON.parse(toUser.slotProgress) : {};
+    } catch (e) { toSlotProgress = {}; }
+    
+    // Initialize any missing slots
+    for (let i = 1; i <= toUser.queueSlots; i++) {
+      if (toSlotProgress[i.toString()] === undefined) {
+        toSlotProgress[i.toString()] = 0;
+      }
+    }
     
     const slotKey = targetSlotNumber.toString();
-    const prevProgress = toSlotProgress[slotKey] || 0;
+    const prevProgress = parseInt(toSlotProgress[slotKey]) || 0;
     const newProgress = prevProgress + bubbleAmount;
     const REQUIRED = 400;
     
     console.log(`Slot ${targetSlotNumber}: ${prevProgress} + ${bubbleAmount} = ${newProgress}/${REQUIRED}`);
     
+    // Deduct from supporter
     fromUser.bubblesCount = parseInt(fromUser.bubblesCount) - bubbleAmount;
     
+    // Update progress
     toSlotProgress[slotKey] = newProgress;
     
-    toUser.bubblesReceived = parseInt(toUser.bubblesReceived || 0) + bubbleAmount;
-    console.log(`Updated bubblesReceived: ${toUser.bubblesReceived}`);
-    
+    // Update bubblesReceived to track all support
+toUser.bubblesReceived = parseInt(toUser.bubblesReceived || 0) + bubbleAmount;
+console.log(`Updated bubblesReceived: ${toUser.bubblesReceived}`);
     let slotCompleted = false;
     let earned = 0;
     
+    // Check completion
     if (newProgress >= REQUIRED) {
       slotCompleted = true;
       earned = REQUIRED;
       
       console.log(`★ SLOT ${targetSlotNumber} COMPLETED ★`);
       
+      // Credit receiver
       toUser.bubblesCount = parseInt(toUser.bubblesCount) + earned;
       
+      // Remove completed slot and renumber
       delete toSlotProgress[slotKey];
       
       const oldKeys = Object.keys(toSlotProgress).map(k => parseInt(k)).sort((a, b) => a - b);
@@ -1257,8 +1138,10 @@ router.post('/support', async (req, res) => {
       }
       toSlotProgress = newProgress2;
       
+      // Decrease slots
       toUser.queueSlots = Math.max(0, parseInt(toUser.queueSlots) - 1);
       
+      // If no slots, remove from queue
       if (toUser.queueSlots === 0) {
         toUser.queuePosition = 0;
         toSlotProgress = {};
@@ -1268,18 +1151,21 @@ router.post('/support', async (req, res) => {
       console.log('Receiver now has', toUser.queueSlots, 'slots');
     }
     
-    // ✅ CRITICAL FIX: Always stringify for database storage
     toUser.slotProgress = JSON.stringify(toSlotProgress);
-    console.log('TO Final slotProgress (stringified):', toUser.slotProgress);
     
+    // Calculate slots for supporter
     const slotsForSupporter = Math.floor(bubbleAmount / 100);
     console.log(`Supporter gets ${slotsForSupporter} slots (${bubbleAmount}/100)`);
     
     if (slotsForSupporter > 0) {
-      // ✅ CRITICAL FIX: Use validation helper for supporter
-      let fromSlotProgress = validateAndFixSlotProgress(fromUser.slotProgress, fromUser.queueSlots || 0);
+      // Parse supporter's progress
+      let fromSlotProgress = {};
+      try {
+        fromSlotProgress = fromUser.slotProgress ? JSON.parse(fromUser.slotProgress) : {};
+      } catch (e) { fromSlotProgress = {}; }
       
       if (fromUser.queuePosition === 0) {
+        // Find max position
         const allQueued = await User.findAll({
           where: { queuePosition: { [Op.gt]: 0 }, id: { [Op.ne]: toUser.id } },
           attributes: ['id', 'queuePosition', 'queueSlots'],
@@ -1298,6 +1184,7 @@ router.post('/support', async (req, res) => {
         fromUser.queuePosition = maxPos + 1;
         fromUser.queueSlots = slotsForSupporter;
         
+        // Initialize ALL slots
         fromSlotProgress = {};
         for (let i = 1; i <= slotsForSupporter; i++) {
           fromSlotProgress[i.toString()] = 0;
@@ -1305,6 +1192,7 @@ router.post('/support', async (req, res) => {
         
         console.log(`Supporter JOINED at position ${fromUser.queuePosition} with ${slotsForSupporter} slots`);
       } else {
+        // Add more slots
         const current = parseInt(fromUser.queueSlots) || 0;
         fromUser.queueSlots = current + slotsForSupporter;
         
@@ -1315,18 +1203,19 @@ router.post('/support', async (req, res) => {
         console.log(`Supporter now has ${fromUser.queueSlots} slots`);
       }
       
-      // ✅ CRITICAL FIX: Always stringify for database storage
       fromUser.slotProgress = JSON.stringify(fromSlotProgress);
-      console.log('FROM Final slotProgress (stringified):', fromUser.slotProgress);
     }
     
+    // Save
     await fromUser.save({ transaction: t });
     await toUser.save({ transaction: t });
     
+    // Rebalance if completed
     if (slotCompleted) {
       await rebalanceQueuePositions(t);
     }
     
+    // Create transaction
     const tx = await BubbleTransaction.create({
       fromUserId: req.user.id,
       toUserId: parseInt(toUserId),
@@ -1340,20 +1229,20 @@ router.post('/support', async (req, res) => {
     
     await t.commit();
     
+    // Fetch fresh
     const finalFrom = await User.findByPk(req.user.id);
     const finalTo = await User.findByPk(toUserId);
     
-    // ✅ Use validation helper for final response
-    const fromProg = validateAndFixSlotProgress(finalFrom.slotProgress, finalFrom.queueSlots);
-    const toProg = validateAndFixSlotProgress(finalTo.slotProgress, finalTo.queueSlots);
+    let fromProg = {};
+    try { fromProg = JSON.parse(finalFrom.slotProgress || '{}'); } catch(e) {}
+    
+    let toProg = {};
+    try { toProg = JSON.parse(finalTo.slotProgress || '{}'); } catch(e) {}
     
     console.log('========================================');
     console.log('FINAL - Supporter:', finalFrom.name, '| Pos:', finalFrom.queuePosition, '| Slots:', finalFrom.queueSlots, '| Progress:', fromProg);
     console.log('FINAL - Receiver:', finalTo.name, '| Pos:', finalTo.queuePosition, '| Slots:', finalTo.queueSlots, '| Progress:', toProg);
     console.log('========================================\n');
-    
-    const finalSlotProgress = slotCompleted ? 0 : newProgress;
-    console.log(`📤 Sending response - Slot ${targetSlotNumber}: ${finalSlotProgress}/${REQUIRED}`);
     
     res.json({
       message: slotCompleted 
@@ -1361,7 +1250,7 @@ router.post('/support', async (req, res) => {
         : `Supported slot ${targetSlotNumber}: ${newProgress}/${REQUIRED}`,
       slotCompleted,
       slotNumber: targetSlotNumber,
-      slotProgress: finalSlotProgress,
+      slotProgress: slotCompleted ? 0 : newProgress,
       supporterJoinedQueue: finalFrom.queuePosition > 0,
       supporterQueuePosition: finalFrom.queuePosition,
       queueSlotsOpened: slotsForSupporter,
@@ -1512,8 +1401,9 @@ router.get('/my-goal', async (req, res) => {
   }
 });
 
+// Update the /giveaway/donate route to accept location parameter
 router.post('/giveaway/donate', async (req, res) => {
-  const { category, bubbles, location } = req.body;
+  const { category, bubbles, location } = req.body; // Added location parameter
   const userId = req.user?.id;
 
   console.log('🎁 Giveaway donation request with location:', { 
@@ -1549,10 +1439,6 @@ router.post('/giveaway/donate', async (req, res) => {
       await t.rollback();
       return res.status(400).json({ message: `No active ${category} giveaway. Admin hasn't set it up yet.` });
     }
-    if (!giveaway.isActive) {
-      await t.rollback();
-      return res.status(400).json({ message: `${category} giveaway is currently disabled by admin.` });
-    }
 
     const amountPerUser = giveaway.amountPerUser;
     if (amountPerUser <= 0) throw new Error('Invalid giveaway amount per user');
@@ -1574,18 +1460,20 @@ router.post('/giveaway/donate', async (req, res) => {
     }, { transaction: t });
     console.log(`   ✅ Recorded donation transaction`);
 
+    // Build query with location filter
     let eligibleUsersQuery = `
       SELECT u.id, u.name, u.createdAt, u.area, u.city,
-             COALESCE(SUM(bt.bubbleAmount), 0) AS totalReturned
+             COALESCE(SUM(bt.bubbleAmount), 0) AS totalDonated
       FROM users u
       JOIN bubble_transactions bt ON bt.fromUserId = u.id
       WHERE u.isActive = 1 
         AND u.id != :donorId
-        AND bt.type = 'back'
+        AND bt.type IN ('support', 'donation', 'transfer')
         AND bt.status = 'completed'
-        
+        AND (bt.giveaway = 0 OR bt.giveaway IS NULL)
     `;
 
+    // Add location filter if provided
     if (location && location !== 'All') {
       const knownCities = ['Karachi', 'Lahore', 'Islamabad', 'Rawalpindi', 'Faisalabad', 'Multan', 'Hyderabad', 'Quetta', 'Peshawar'];
       const knownAreas = ['Bahria Town', 'DHA', 'Clifton', 'Gulshan', 'Malir', 'Saddar', 'North Nazimabad', 'Gulberg', 'Johar Town', 'Model Town'];
@@ -1601,7 +1489,7 @@ router.post('/giveaway/donate', async (req, res) => {
 
     eligibleUsersQuery += `
       GROUP BY u.id, u.name, u.createdAt, u.area, u.city
-      ORDER BY totalReturned DESC, u.createdAt ASC
+      ORDER BY totalDonated DESC, u.createdAt ASC
     `;
 
     const eligibleUsers = await sequelize.query(eligibleUsersQuery, {
@@ -1626,6 +1514,7 @@ router.post('/giveaway/donate', async (req, res) => {
 
     console.log(`   📊 Found ${eligibleCount} eligible users in ${location || 'all locations'}`);
 
+    // Rest of the distribution logic remains the same...
     let remaining = bubbles;
     const recipientMap = new Map();
     let round = 1;
@@ -1655,7 +1544,7 @@ router.post('/giveaway/donate', async (req, res) => {
     console.log(`   Remaining: ${remaining} (should be 0)`);
 
     const finalTransactions = [];
-  
+    const updates = [];
     const recipientsList = [];
 
     let totalDistributed = 0;
@@ -1672,13 +1561,14 @@ router.post('/giveaway/donate', async (req, res) => {
         updatedAt: new Date(),
       });
 
+      updates.push(`WHEN ${id} THEN bubblesCount + ${data.totalReceived}`);
       totalDistributed += data.totalReceived;
       recipientsList.push({
         rank: recipientsList.length + 1,
         userId: id,
         name: data.name,
         location: `${data.area || ''} ${data.city || ''}`.trim() || 'Unknown',
-        totalReturned: data.totalReturned,
+        totalDonated: data.totalDonated,
         received: data.totalReceived,
       });
     }
@@ -1686,7 +1576,13 @@ router.post('/giveaway/donate', async (req, res) => {
     await BubbleTransaction.bulkCreate(finalTransactions, { transaction: t });
     console.log(`   ✅ Inserted ${finalTransactions.length} transfer transactions`);
 
-    
+    const ids = Array.from(recipientMap.keys()).join(',');
+    await sequelize.query(`
+      UPDATE users 
+      SET bubblesCount = CASE id ${updates.join(' ')} END
+      WHERE id IN (${ids});
+    `, { transaction: t });
+    console.log(`   ✅ Updated ${recipientMap.size} user balances`);
 
     await sequelize.query(
       `UPDATE giveaways 
@@ -1742,10 +1638,14 @@ router.post('/giveaway/donate', async (req, res) => {
   }
 });
 
+
+// routes/get.js - Add these routes after existing giveaway routes
+
+// Get eligible users with location filter for giveaway
 router.get('/giveaway/eligible-users/:category', async (req, res) => {
   try {
     const { category } = req.params;
-    const { location } = req.query;
+    const { location } = req.query; // Can be city or area
     const donorId = req.user.id;
 
     console.log('🎁 Getting eligible users for giveaway with location filter:', {
@@ -1754,38 +1654,30 @@ router.get('/giveaway/eligible-users/:category', async (req, res) => {
       donorId
     });
 
+    // Check if giveaway exists
     const giveaway = await Giveaway.findOne({
       where: { category, distributed: false },
-      attributes: ['id', 'amountPerUser', 'isActive']
+      attributes: ['id', 'amountPerUser']
     });
 
     if (!giveaway) {
       return res.status(404).json({ message: `No active ${category} giveaway` });
     }
 
-    if (!giveaway.isActive) {
-      return res.json({
-        eligibleCount: 0,
-        amountPerUser: giveaway.amountPerUser,
-        topDonors: [],
-        locationApplied: location && location !== 'All' ? location : 'All Locations',
-        isActive: false,
-        disabledMessage: `${category} giveaway is currently disabled by admin`
-      });
-    }
-
+    // Base query
     let query = `
       SELECT u.id, u.name, u.createdAt, u.area, u.city, u.province,
-             COALESCE(SUM(bt.bubbleAmount), 0) AS totalReturned
+             COALESCE(SUM(bt.bubbleAmount), 0) AS totalDonated
       FROM users u
       JOIN bubble_transactions bt ON bt.fromUserId = u.id
       WHERE u.isActive = 1 
         AND u.id != :donorId
-        AND bt.type = 'back'
+        AND bt.type IN ('support', 'donation', 'transfer')
         AND bt.status = 'completed'
-        
+        AND (bt.giveaway = 0 OR bt.giveaway IS NULL)
     `;
 
+    // Add location filter if provided
     if (location && location !== 'All') {
       const knownCities = ['Karachi', 'Lahore', 'Islamabad', 'Rawalpindi', 'Faisalabad', 'Multan', 'Hyderabad', 'Quetta', 'Peshawar'];
       const knownAreas = ['Bahria Town', 'DHA', 'Clifton', 'Gulshan', 'Malir', 'Saddar', 'North Nazimabad', 'Gulberg', 'Johar Town', 'Model Town'];
@@ -1795,13 +1687,14 @@ router.get('/giveaway/eligible-users/:category', async (req, res) => {
       } else if (knownAreas.includes(location)) {
         query += ` AND u.area = :location `;
       } else {
+        // Check any location field
         query += ` AND (u.city = :location OR u.area = :location OR u.province = :location) `;
       }
     }
 
     query += `
       GROUP BY u.id, u.name, u.createdAt, u.area, u.city, u.province
-      ORDER BY totalReturned DESC, u.createdAt ASC
+      ORDER BY totalDonated DESC, u.createdAt ASC
     `;
 
     const eligibleUsers = await sequelize.query(query, {
@@ -1812,20 +1705,20 @@ router.get('/giveaway/eligible-users/:category', async (req, res) => {
       type: sequelize.QueryTypes.SELECT,
     });
 
+    // Get top donors for preview (max 5)
     const topDonors = eligibleUsers.slice(0, 5).map((user, index) => ({
       rank: index + 1,
       userId: user.id,
       name: user.name,
       location: `${user.area || ''} ${user.city || ''}`.trim() || 'Unknown',
-      totalReturned: user.totalReturned
+      totalDonated: user.totalDonated
     }));
 
     res.json({
       eligibleCount: eligibleUsers.length,
       amountPerUser: giveaway.amountPerUser,
       topDonors,
-      locationApplied: location && location !== 'All' ? location : 'All Locations',
-      isActive: true
+      locationApplied: location && location !== 'All' ? location : 'All Locations'
     });
   } catch (e) {
     console.error('❌ Get eligible users error:', e);
@@ -1833,6 +1726,7 @@ router.get('/giveaway/eligible-users/:category', async (req, res) => {
   }
 });
 
+// Get cities with eligible users for giveaway
 router.get('/giveaway/eligible-cities', async (req, res) => {
   try {
     const cities = await sequelize.query(`
@@ -1841,9 +1735,9 @@ router.get('/giveaway/eligible-cities', async (req, res) => {
       JOIN bubble_transactions bt ON bt.fromUserId = u.id
       WHERE u.isActive = 1
         AND u.city IS NOT NULL
-        AND bt.type = 'back'
+        AND bt.type IN ('support', 'donation', 'transfer')
         AND bt.status = 'completed'
-        
+        AND (bt.giveaway = 0 OR bt.giveaway IS NULL)
       ORDER BY u.city ASC
     `, {
       type: sequelize.QueryTypes.SELECT
@@ -1857,6 +1751,7 @@ router.get('/giveaway/eligible-cities', async (req, res) => {
   }
 });
 
+// Get areas for a specific city with eligible users
 router.get('/giveaway/eligible-areas/:city', async (req, res) => {
   try {
     const { city } = req.params;
@@ -1868,9 +1763,9 @@ router.get('/giveaway/eligible-areas/:city', async (req, res) => {
       WHERE u.isActive = 1
         AND u.city = :city
         AND u.area IS NOT NULL
-        AND bt.type = 'back'
+        AND bt.type IN ('support', 'donation', 'transfer')
         AND bt.status = 'completed'
-        
+        AND (bt.giveaway = 0 OR bt.giveaway IS NULL)
       ORDER BY u.area ASC
     `, {
       replacements: { city },
@@ -1884,6 +1779,8 @@ router.get('/giveaway/eligible-areas/:city', async (req, res) => {
     res.status(400).json({ message: e.message });
   }
 });
+
+
 
 router.get('/giveaway/preview/:category', async (req, res) => {
   try {
@@ -1902,7 +1799,7 @@ router.get('/giveaway/preview/:category', async (req, res) => {
     const eligibleUsersResult = await sequelize.query(`
       SELECT COUNT(DISTINCT fromUserId) as count
       FROM bubble_transactions
-      WHERE type = 'back'
+      WHERE type IN ('support', 'donation', 'transfer')
       AND status = 'completed'
       AND (giveaway = 0 OR giveaway IS NULL)
     `, {
@@ -2117,12 +2014,26 @@ router.get('/user/giveaway-bubbles', async (req, res) => {
   }
 });
 
+
+// FIXED VERSION - Add this to your get.js file (replace the previous version)
+
+// ==================== BUBBLE BREAKDOWN ====================
+// GET /get/user/bubble-breakdown
+// Returns breakdown of user's bubbles by source
+// ENHANCED VERSION with detailed logging
+// Replace your existing /user/bubble-breakdown endpoint with this
+
+// ==================== SIMPLE BUBBLE BREAKDOWN ROUTE ====================
+// Just fetch the LATEST deposit amount, not sum all deposits
+// Replace your existing /user/bubble-breakdown route with this
+
 router.get('/user/bubble-breakdown', async (req, res) => {
   try {
     const userId = req.user.id;
     console.log(`\n💰 ==================== BUBBLE BREAKDOWN ====================`);
     console.log(`   User ID: ${userId}`);
 
+    // Get user info
     const user = await User.findByPk(userId, {
       attributes: ['id', 'name', 'bubblesCount']
     });
@@ -2133,9 +2044,10 @@ router.get('/user/bubble-breakdown', async (req, res) => {
 
     console.log(`   User: ${user.name}`);
     console.log(`   Current Total: ${user.bubblesCount} bubbles`);
-    console.log(`   ────────────────────────────────────────────────────────`);
+    console.log(`   ──────────────────────────────────────────────────────`);
 
-    console.log(`   🔥 Fetching LATEST deposit...`);
+    // 1. GET LATEST DEPOSIT (not sum, just the most recent one)
+    console.log(`   📥 Fetching LATEST deposit...`);
     const latestDepositResult = await sequelize.query(`
       SELECT amount
       FROM wallettransactions
@@ -2151,7 +2063,8 @@ router.get('/user/bubble-breakdown', async (req, res) => {
     const depositedBubbles = latestDepositResult[0]?.amount || 0;
     console.log(`   ✅ Latest Deposit: ${depositedBubbles} bubbles`);
 
-    console.log(`   🔥 Checking SUPPORT RECEIVED bubbles...`);
+    // 2. SUPPORT RECEIVED
+    console.log(`   📥 Checking SUPPORT RECEIVED bubbles...`);
     const supportReceivedResult = await sequelize.query(`
       SELECT 
         COALESCE(SUM(bubbleAmount), 0) as totalReceived,
@@ -2170,7 +2083,8 @@ router.get('/user/bubble-breakdown', async (req, res) => {
     const supportCount = parseInt(supportReceivedResult[0]?.supportCount || 0);
     console.log(`   ✅ From Support: ${supportReceivedBubbles} bubbles (${supportCount} transactions)`);
 
-    console.log(`   🔥 Checking GIVEAWAY bubbles...`);
+    // 3. GIVEAWAY BUBBLES
+    console.log(`   📥 Checking GIVEAWAY bubbles...`);
     const giveawayResult = await sequelize.query(`
       SELECT 
         COALESCE(SUM(bubbleAmount), 0) as totalGiveaway,
@@ -2188,7 +2102,7 @@ router.get('/user/bubble-breakdown', async (req, res) => {
     const giveawayCount = parseInt(giveawayResult[0]?.giveawayCount || 0);
     console.log(`   ✅ Giveaway: ${giveawayBubbles} bubbles (${giveawayCount} transactions)`);
 
-    console.log(`   ────────────────────────────────────────────────────────`);
+    console.log(`   ──────────────────────────────────────────────────────`);
     console.log(`   📊 BREAKDOWN:`);
     console.log(`      Latest Deposit:   ${depositedBubbles}`);
     console.log(`      From Support:     ${supportReceivedBubbles}`);
@@ -2197,8 +2111,9 @@ router.get('/user/bubble-breakdown', async (req, res) => {
     console.log(`      Current Balance:  ${user.bubblesCount}`);
     console.log(`   ══════════════════════════════════════════════════════\n`);
 
+    // Prepare response
     const response = {
-      depositedBubbles: depositedBubbles,
+      depositedBubbles: depositedBubbles,  // Latest deposit only
       supportReceivedBubbles: supportReceivedBubbles,
       giveawayBubbles: giveawayBubbles,
       totalBubbles: user.bubblesCount,
@@ -2221,11 +2136,22 @@ router.get('/user/bubble-breakdown', async (req, res) => {
   }
 });
 
+// ==================== END OF SIMPLE BUBBLE BREAKDOWN ROUTE ====================
+// ==================== END OF FIXED ENDPOINT ====================
+
+
+
+
+
+// DIAGNOSTIC ENDPOINT - Add this temporarily to debug
+// You can remove this after fixing the issue
+
 router.get('/user/bubble-diagnostic', async (req, res) => {
   try {
     const userId = req.user.id;
     console.log(`\n🔍 [DIAGNOSTIC] Checking transactions for user ${userId}`);
 
+    // Get all transactions where user received bubbles
     const receivedTransactions = await sequelize.query(`
       SELECT 
         id,
@@ -2249,6 +2175,7 @@ router.get('/user/bubble-diagnostic', async (req, res) => {
 
     console.log(`   Found ${receivedTransactions.length} received transactions`);
 
+    // Count by type
     const typeBreakdown = {
       support: receivedTransactions.filter(t => t.type === 'support').length,
       transfer: receivedTransactions.filter(t => t.type === 'transfer').length,
@@ -2256,11 +2183,13 @@ router.get('/user/bubble-diagnostic', async (req, res) => {
       other: receivedTransactions.filter(t => !['support', 'transfer', 'donation'].includes(t.type)).length,
     };
 
+    // Count by giveaway status
     const giveawayBreakdown = {
       giveaway: receivedTransactions.filter(t => t.giveaway === 1).length,
       nonGiveaway: receivedTransactions.filter(t => t.giveaway === 0 || t.giveaway === null).length,
     };
 
+    // Sum by category
     const bubbleBreakdown = {
       totalFromGiveaway: receivedTransactions
         .filter(t => t.giveaway === 1)
@@ -2270,6 +2199,7 @@ router.get('/user/bubble-diagnostic', async (req, res) => {
         .reduce((sum, t) => sum + parseInt(t.bubbleAmount), 0),
     };
 
+    // Get wallet deposits
     const deposits = await sequelize.query(`
       SELECT 
         id,
@@ -2291,6 +2221,7 @@ router.get('/user/bubble-diagnostic', async (req, res) => {
 
     const totalDeposited = deposits.reduce((sum, d) => sum + parseInt(d.amount), 0);
 
+    // Get spending
     const spentTransactions = await sequelize.query(`
       SELECT COALESCE(SUM(bubbleAmount), 0) as totalSpent
       FROM BubbleTransactions
@@ -2342,11 +2273,20 @@ router.get('/user/bubble-diagnostic', async (req, res) => {
   }
 });
 
+
+///////////////////////////////////////////
+
+// Get users who you owe bubbles to (received support from)
+// routes/get.js - /back-owed endpoint
+
+// routes/get.js - Modify /back-owed with logging
+// Get total bubbles owed (simple version using bubblesReceived)
 router.get('/back-owed', async (req, res) => {
   try {
     const userId = req.user.id;
     console.log('\n💸 /back-owed called for user:', userId);
     
+    // Get user's bubblesReceived
     const user = await User.findByPk(userId, {
       attributes: ['id', 'name', 'bubblesReceived']
     });
@@ -2355,6 +2295,7 @@ router.get('/back-owed', async (req, res) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
     
+    // Calculate total returned
     const returnedResult = await sequelize.query(`
       SELECT COALESCE(SUM(bubbleAmount), 0) as totalReturned
       FROM bubble_transactions
@@ -2372,6 +2313,7 @@ router.get('/back-owed', async (req, res) => {
     
     console.log('💸 Received:', totalReceived, '| Returned:', totalReturned, '| Owed:', totalOwed);
     
+    // If owed > 0, create a single entry
     const data = totalOwed > 0 ? [{
       id: 'total',
       name: 'All Supporters',
@@ -2391,6 +2333,7 @@ router.get('/back-owed', async (req, res) => {
   }
 });
 
+// Give bubbles back (simple version - just tracks total)
 router.post('/give-back', async (req, res) => {
   const t = await sequelize.transaction();
   
@@ -2420,6 +2363,7 @@ router.post('/give-back', async (req, res) => {
       });
     }
     
+    // Calculate actual owed
     const returnedResult = await sequelize.query(`
       SELECT COALESCE(SUM(bubbleAmount), 0) as totalReturned
       FROM bubble_transactions
@@ -2446,13 +2390,15 @@ router.post('/give-back', async (req, res) => {
 
     const amountToGiveBack = Math.min(bubbleAmount, actualOwed);
 
+    // Deduct from user's balance
     await fromUser.update({ 
       bubblesCount: fromUser.bubblesCount - amountToGiveBack 
     }, { transaction: t });
 
+    // Create transaction record (toUserId = fromUserId since we're not tracking individual supporters)
     const bubbleTransaction = await BubbleTransaction.create({
       fromUserId,
-      toUserId: fromUserId,
+      toUserId: fromUserId, // Self-reference since we're just tracking total
       bubbleAmount: amountToGiveBack,
       type: 'back',
       status: 'completed',
@@ -2474,116 +2420,6 @@ router.post('/give-back', async (req, res) => {
     await t.rollback();
     console.error('❌ Error giving back bubbles:', error);
     res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// ============================================================
-// NEW: Fix corrupted slotProgress for a specific user
-// ============================================================
-router.post('/fix-slot-progress/:userId', async (req, res) => {
-  try {
-    const { userId } = req.params;
-    
-    // Only allow admin or the user themselves
-    if (req.user.id !== parseInt(userId) && req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Unauthorized' });
-    }
-    
-    const user = await User.findByPk(userId);
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-    
-    console.log(`\n🔧 FIXING slotProgress for user ${userId}`);
-    console.log('Before:', user.slotProgress);
-    
-    const queueSlots = parseInt(user.queueSlots) || 0;
-    
-    // Create clean slotProgress
-    const cleanProgress = {};
-    for (let i = 1; i <= queueSlots; i++) {
-      cleanProgress[i.toString()] = 0;
-    }
-    
-    // Save with explicit stringify
-    user.slotProgress = JSON.stringify(cleanProgress);
-    await user.save();
-    
-    console.log('After:', user.slotProgress);
-    
-    res.json({
-      success: true,
-      message: 'slotProgress fixed',
-      before: 'corrupted',
-      after: cleanProgress
-    });
-    
-  } catch (error) {
-    console.error('Fix slotProgress error:', error);
-    res.status(400).json({ message: error.message });
-  }
-});
-
-// ============================================================
-// NEW: Fix ALL corrupted slotProgress (admin only)
-// ============================================================
-router.post('/fix-all-slot-progress', async (req, res) => {
-  try {
-    // Only allow admin
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Admin only' });
-    }
-    
-    const users = await User.findAll({
-      where: {
-        queueSlots: { [Op.gt]: 0 }
-      }
-    });
-    
-    const fixed = [];
-    
-    for (const user of users) {
-      const queueSlots = parseInt(user.queueSlots) || 0;
-      const validated = validateAndFixSlotProgress(user.slotProgress, queueSlots);
-      
-      // Check if it was corrupted
-      const raw = user.slotProgress;
-      let wasCorrupted = false;
-      
-      if (typeof raw === 'string') {
-        try {
-          const parsed = JSON.parse(raw);
-          const keys = Object.keys(parsed);
-          if (keys.length > queueSlots + 5) {
-            wasCorrupted = true;
-          }
-        } catch (e) {
-          wasCorrupted = true;
-        }
-      }
-      
-      if (wasCorrupted) {
-        user.slotProgress = JSON.stringify(validated);
-        await user.save();
-        fixed.push({
-          userId: user.id,
-          name: user.name,
-          slots: queueSlots,
-          newProgress: validated
-        });
-        console.log(`🔧 Fixed user ${user.id} (${user.name})`);
-      }
-    }
-    
-    res.json({
-      success: true,
-      fixedCount: fixed.length,
-      fixed: fixed
-    });
-    
-  } catch (error) {
-    console.error('Fix all slotProgress error:', error);
-    res.status(400).json({ message: error.message });
   }
 });
 
