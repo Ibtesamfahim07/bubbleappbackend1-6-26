@@ -7,6 +7,10 @@ const Offer = require('./Offer');
 const OfferRequest = require('./OfferRequest');
 const Giveaway = require('./Giveaway');
 const Notification = require('./Notification');
+const ScheduledNotification = require('./ScheduledNotification');
+const QueueTracker = require('./QueueTracker'); // ✅ Add this line
+
+
 
 // User and Wallet Associations
 User.hasMany(WalletTransaction, { foreignKey: 'userId' });
@@ -79,5 +83,8 @@ module.exports = {
   Offer, 
   OfferRequest,
   Giveaway,
-  Notification
+  Notification,
+  ScheduledNotification,
+  QueueTracker
+  
 };

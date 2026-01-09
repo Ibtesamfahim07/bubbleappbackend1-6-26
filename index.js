@@ -9,6 +9,11 @@ const makeRoutes = require('./routes/make');
 const backRoutes = require('./routes/back');
 const adminRoutes = require('./routes/admin');
 const notificationRoutes = require('./routes/notification');
+const NotificationScheduler = require('./schedulers/notificationScheduler');
+
+// ✅ Import models for top user initialization
+const { User, QueueTracker } = require('./models');
+const { Op, literal } = require('sequelize');
 
 const app = express();
 
@@ -108,6 +113,192 @@ function getNetworkInfo() {
   return addresses;
 }
 
+// ✅ NEW: Helper function to validate and fix slotProgress
+function validateAndFixSlotProgress(slotProgress, queueSlots) {
+  console.log('🔍 Validating slotProgress:', typeof slotProgress, slotProgress);
+  
+  let parsed = slotProgress;
+  
+  if (!parsed) {
+    console.log('⚠️ slotProgress is null/undefined, initializing empty object');
+    parsed = {};
+  }
+  
+  let parseAttempts = 0;
+  while (typeof parsed === 'string' && parseAttempts < 3) {
+    parseAttempts++;
+    try {
+      parsed = JSON.parse(parsed);
+      console.log(`✅ JSON parse attempt ${parseAttempts} succeeded`);
+    } catch (e) {
+      console.error(`❌ JSON parse attempt ${parseAttempts} failed:`, e.message);
+      parsed = {};
+      break;
+    }
+  }
+  
+  if (typeof parsed === 'string') {
+    console.error('❌ slotProgress still a string after parsing, resetting');
+    parsed = {};
+  }
+  
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    console.error('❌ slotProgress is not a valid object, resetting');
+    parsed = {};
+  }
+  
+  const keys = Object.keys(parsed);
+  let isCorrupted = false;
+  
+  if (keys.length > queueSlots + 5) {
+    console.error(`❌ CORRUPTION DETECTED: Too many keys (${keys.length}) for ${queueSlots} slots`);
+    isCorrupted = true;
+  }
+  
+  if (!isCorrupted) {
+    for (const key of keys) {
+      const value = parsed[key];
+      if (typeof value === 'string' && value.length === 1 && isNaN(parseInt(value))) {
+        console.error(`❌ CORRUPTION DETECTED: Key "${key}" has single char value "${value}"`);
+        isCorrupted = true;
+        break;
+      }
+    }
+  }
+  
+  if (isCorrupted) {
+    console.log('🔄 Resetting corrupted slotProgress to clean state');
+    parsed = {};
+  }
+  
+  const validProgress = {};
+  const slots = parseInt(queueSlots) || 0;
+  
+  for (let i = 1; i <= slots; i++) {
+    const key = i.toString();
+    const value = parsed[key];
+    
+    if (typeof value === 'number' && !isNaN(value) && value >= 0 && value <= 400) {
+      validProgress[key] = Math.floor(value);
+    } else if (typeof value === 'string') {
+      const num = parseInt(value, 10);
+      if (!isNaN(num) && num >= 0 && num <= 400) {
+        validProgress[key] = num;
+      } else {
+        validProgress[key] = 0;
+      }
+    } else {
+      validProgress[key] = 0;
+    }
+  }
+  
+  console.log('✅ Validated slotProgress:', validProgress);
+  return validProgress;
+}
+
+// ✅ NEW: Initialize top user flag function
+async function updateTopUserFlag() {
+  try {
+    console.log('🔝 Calculating top user...');
+    
+    const queuedUsers = await User.findAll({ 
+      where: { 
+        queuePosition: { [Op.gt]: 0 },
+        queueSlots: { [Op.gt]: 0 }
+      },
+      attributes: ['id', 'name', 'queuePosition', 'queueSlots', 'slotProgress']
+    });
+    
+    if (queuedUsers.length === 0) {
+      console.log('🔝 No users in queue');
+      return;
+    }
+    
+    let topUserId = null;
+    let lowestIncompleteQueuePos = Infinity;
+    
+    // Find the user with the lowest incomplete queue position
+    for (const user of queuedUsers) {
+      const slotProgress = validateAndFixSlotProgress(user.slotProgress, user.queueSlots);
+      
+      // Get all queue positions for this user
+      const queuePositions = Object.keys(slotProgress)
+        .map(k => parseInt(k))
+        .sort((a, b) => a - b);
+      
+      // Find the lowest incomplete queue position for this user
+      for (const queuePos of queuePositions) {
+        const progress = slotProgress[queuePos.toString()] || 0;
+        
+        if (progress < 400) {
+          // This queue position is incomplete
+          if (queuePos < lowestIncompleteQueuePos) {
+            lowestIncompleteQueuePos = queuePos;
+            topUserId = user.id;
+          }
+          break; // Only check the first incomplete position for this user
+        }
+      }
+    }
+    
+    console.log(`🔝 Top user found: User ${topUserId} at Queue Position ${lowestIncompleteQueuePos}`);
+    
+    // Reset all users to isTopUser = 0
+    await User.update({ isTopUser: 0 }, { where: { isTopUser: 1 } });
+    
+    // Set the top user flag
+    if (topUserId) {
+      await User.update({ isTopUser: 1 }, { where: { id: topUserId } });
+      
+      const topUser = queuedUsers.find(u => u.id === topUserId);
+      console.log(`🔝 Set isTopUser=1 for ${topUser?.name || topUserId} (Queue #${lowestIncompleteQueuePos})`);
+    }
+    
+  } catch (error) {
+    console.error('🔝 Error updating top user flag:', error);
+    throw error;
+  }
+}
+
+// ✅ NEW: Initialize queue tracker
+async function initializeQueueTracker() {
+  try {
+    console.log('🎯 Initializing queue tracker...');
+    
+    // Check if queue_tracker table exists and has a row
+    const [tracker] = await sequelize.query(`
+      SELECT * FROM queue_tracker WHERE id = 1
+    `).catch(() => [null]);
+    
+    if (!tracker || tracker.length === 0) {
+      console.log('📊 Queue tracker not found, creating...');
+      
+      // Find the current max queue position
+      const maxQueuePos = await User.max('queuePosition', {
+        where: { queuePosition: { [Op.gt]: 0 } }
+      }) || 0;
+      
+      console.log(`📊 Current max queue position: ${maxQueuePos}`);
+      
+      // Create or update queue tracker
+      await sequelize.query(`
+        INSERT INTO queue_tracker (id, lastQueuePosition, updatedAt)
+        VALUES (1, ${maxQueuePos}, NOW())
+        ON DUPLICATE KEY UPDATE 
+          lastQueuePosition = ${maxQueuePos},
+          updatedAt = NOW()
+      `);
+      
+      console.log(`✅ Queue tracker initialized with position ${maxQueuePos}`);
+    } else {
+      console.log('✅ Queue tracker already exists');
+    }
+  } catch (error) {
+    console.error('❌ Error initializing queue tracker:', error);
+    // Don't throw - allow server to start even if this fails
+  }
+}
+
 // Database initialization
 let dbInitialized = false;
 const initializeDatabase = async () => {
@@ -119,6 +310,18 @@ const initializeDatabase = async () => {
       // await sequelize.sync({ force: false, alter: false });
       console.log('✅ Database synchronized');
       
+      // ✅ Initialize queue tracker
+      await initializeQueueTracker();
+      
+      // ✅ Initialize top user flag
+      await updateTopUserFlag();
+      console.log('✅ Top user flag initialized');
+      
+      // Initialize notification scheduler (only for local, not Vercel)
+      if (!process.env.VERCEL) {
+        NotificationScheduler.init();
+      }
+
       dbInitialized = true;
     } catch (err) {
       console.error('❌ Database error:', err);

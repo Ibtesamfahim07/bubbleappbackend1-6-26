@@ -1,4 +1,4 @@
-// models/User.js - COMPLETE FIXED VERSION with sequelize import
+// models/User.js - COMPLETE FIXED VERSION with sequelize import and isTopUser field
 const { DataTypes } = require('sequelize');
 const sequelize = require('../config/database'); // ADD THIS LINE
 
@@ -122,18 +122,6 @@ const User = sequelize.define('User', {
     defaultValue: 400,
     comment: 'Bubbles needed to complete one queue slot'
   },
-
-  isActive: {
-    type: DataTypes.BOOLEAN,
-    defaultValue: true
-  },
-  role: {
-    type: DataTypes.STRING,
-    defaultValue: 'user',
-    validate: {
-      isIn: [['user', 'admin']]
-    }
-  },
   queueSlots: {
     type: DataTypes.INTEGER,
     defaultValue: 0,
@@ -144,12 +132,31 @@ const User = sequelize.define('User', {
     defaultValue: {},
     comment: 'Object tracking progress per slot: { "1": 300, "2": 100, "3": 200 }'
   },
-  // In your User model, add this field:
-fcmToken: {
-  type: DataTypes.STRING(500),
-  allowNull: true,
-  comment: 'Firebase Cloud Messaging token for push notifications'
-},
+  isTopUser: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false,
+    comment: 'Flag indicating if this user is currently at the top of the queue'
+  },
+
+  // NOTIFICATION FIELD
+  fcmToken: {
+    type: DataTypes.STRING(500),
+    allowNull: true,
+    comment: 'Firebase Cloud Messaging token for push notifications'
+  },
+
+  // STATUS FIELDS
+  isActive: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: true
+  },
+  role: {
+    type: DataTypes.STRING,
+    defaultValue: 'user',
+    validate: {
+      isIn: [['user', 'admin']]
+    }
+  }
 }, {
   timestamps: true,
   tableName: 'users',
@@ -168,10 +175,11 @@ fcmToken: {
     },
     {
       fields: ['lat', 'lng']
+    },
+    {
+      fields: ['isTopUser'] // ✅ Added index for isTopUser field
     }
   ]
 });
-
-
 
 module.exports = User;

@@ -1,9 +1,11 @@
 // routes/get.js - FIXED VERSION with slotProgress validation
 const express = require('express');
 const auth = require('../middleware/auth');
-const { User, BubbleTransaction, Giveaway, OfferRequest, Brand, Offer } = require('../models');
+const { User, BubbleTransaction, Giveaway, OfferRequest, Brand, Offer, QueueTracker } = require('../models');
 const { literal, Op } = require('sequelize');
 const sequelize = require('../config/database');
+const NotificationScheduler = require('../schedulers/notificationScheduler');
+
 
 const router = express.Router();
 router.use(auth);
@@ -216,6 +218,15 @@ router.get('/available-areas/:city', async (req, res) => {
   }
 });
 
+// routes/get.js - UPDATED /nearby endpoint with signup-based visibility
+
+// routes/get.js - SIMPLIFIED VERSION - Just uses isTopUser flag
+
+// ... [Keep all the helper functions and other code above - same as before] ...
+
+// ============================================================
+// SIMPLIFIED /nearby endpoint - Just uses isTopUser flag
+// ============================================================
 router.get('/nearby', async (req, res) => {
   try {
     const { lat, lng, radius = 10, location } = req.query;
@@ -239,10 +250,12 @@ router.get('/nearby', async (req, res) => {
     console.log('Current user:', {
       id: currentUser.id,
       name: currentUser.name,
-      queuePosition: currentUser.queuePosition
+      city: currentUser.city,
+      area: currentUser.area,
+      createdAt: currentUser.createdAt
     });
 
-    // ✅ CHECK IF CURRENT USER HAS EVER SUPPORTED ANYONE
+    // ✅ CHECK: Has user supported anyone before?
     const supportTransaction = await BubbleTransaction.findOne({
       where: {
         fromUserId: req.user.id,
@@ -252,12 +265,12 @@ router.get('/nearby', async (req, res) => {
     });
 
     const hasSupported = !!supportTransaction;
-    const currentUserInQueue = currentUser.queuePosition > 0;
-
-    console.log('🔍 SUPPORT CHECK:', {
-      hasSupported: hasSupported,
-      inQueue: currentUserInQueue,
-      queuePosition: currentUser.queuePosition
+    const isInQueue = currentUser.queuePosition > 0;
+    
+    console.log('🔍 USER STATUS CHECK:', {
+      hasSupported,
+      isInQueue,
+      userCreatedAt: currentUser.createdAt
     });
 
     const distanceFormula = literal(`(
@@ -272,131 +285,184 @@ router.get('/nearby', async (req, res) => {
       id: { [Op.ne]: req.user.id },
       bubblesCount: { [Op.gt]: 0 },
       isActive: true,
-      queuePosition: { [Op.gt]: 0 },
       queueSlots: { [Op.gt]: 0 }
     };
 
-    if (location && location !== 'All') {
-      const cities = ['Karachi', 'Lahore', 'Islamabad', 'Rawalpindi', 'Faisalabad', 'Multan', 'Hyderabad', 'Quetta', 'Peshawar'];
-      const areas = ['Bahria Town', 'DHA', 'Clifton', 'Gulshan', 'Malir', 'Saddar', 'North Nazimabad', 'Qasimabad'];
-      
-      if (cities.includes(location)) where.city = location;
-      else if (areas.includes(location)) where.area = location;
-      else where[Op.or] = [{ city: location }, { area: location }];
+    // ✅ SIMPLE: Just use isTopUser flag - NO queuePosition logic
+    if (!hasSupported && !isInQueue) {
+      // Fresh user - show ONLY the top user (isTopUser=1)
+      console.log('👤 User is NEW - showing only top user with isTopUser=1');
+      where.isTopUser = 1;
+    } else {
+      // User has supported - show all users who signed up BEFORE them
+      console.log('👥 User has supported - showing users signed up before:', currentUser.createdAt);
+      where.createdAt = {
+        [Op.lt]: currentUser.createdAt
+      };
     }
 
-    const users = await User.findAll({
-      attributes: ['id', 'name', 'lat', 'lng', 'bubblesCount', 'city', 'area', 
-                   'queuePosition', 'queueSlots', 'slotProgress', 'createdAt', [distanceFormula, 'distance']],
-      where,
-      having: literal(`distance < ${searchRadius}`),
-      order: [['queuePosition', 'ASC']],
-      limit: 50
-    });
-    
-    console.log(`Found ${users.length} users in queue`);
-
-    // ✅ FILTERING LOGIC BASED ON SUPPORT STATUS
-    const filtered = [];
-
-    for (const u of users) {
-      const uSlots = parseInt(u.queueSlots) || 0;
-      const uQueuePos = parseInt(u.queuePosition) || 0;
+    // ✅ Apply location filter if specified
+    if (location && location !== 'All') {
+      const cities = ['Karachi', 'Lahore', 'Islamabad', 'Rawalpindi', 'Faisalabad', 'Multan', 'Hyderabad', 'Quetta', 'Peshawar', 'Sukkur', 'Larkana', 'Mirpurkhas'];
+      const areas = ['Bahria Town', 'DHA', 'Clifton', 'Gulshan', 'Malir', 'Saddar', 'North Nazimabad', 'Gulberg', 'Johar Town', 'Model Town'];
       
-      if (uSlots <= 0) continue;
-      
-      // ✅ FRESH USER (never supported anyone): Only show Queue #1
-      if (!hasSupported) {
-        if (uQueuePos === 1) {
-          filtered.push(u);
-          console.log(`✅ FRESH USER - Showing Queue #1: ${u.name}`);
-        } else {
-          console.log(`❌ FRESH USER - Hiding ${u.name} (Queue #${uQueuePos}) - must support Queue #1 first`);
-        }
-      } 
-      // ✅ USER WHO HAS SUPPORTED: Show all users above them (lower queue positions)
-      else {
-        if (currentUserInQueue && currentUser.queuePosition > 0) {
-          // User is in queue - show users with LOWER queue positions only
-          if (uQueuePos < currentUser.queuePosition) {
-            filtered.push(u);
-            console.log(`✅ IN QUEUE - Showing ${u.name} (Queue #${uQueuePos}) - above current user (Queue #${currentUser.queuePosition})`);
-          } else {
-            console.log(`❌ IN QUEUE - Hiding ${u.name} (Queue #${uQueuePos}) - not above current user (Queue #${currentUser.queuePosition})`);
-          }
-        } else {
-          // User has supported but not in queue (edge case) - show Queue #1 only
-          if (uQueuePos === 1) {
-            filtered.push(u);
-            console.log(`✅ SUPPORTED BUT NOT IN QUEUE - Showing Queue #1: ${u.name}`);
-          } else {
-            console.log(`❌ SUPPORTED BUT NOT IN QUEUE - Hiding ${u.name} (Queue #${uQueuePos})`);
-          }
-        }
+      if (cities.includes(location)) {
+        where.city = location;
+        console.log(`📍 Filtering by city: ${location}`);
+      } else if (areas.includes(location)) {
+        where.area = location;
+        console.log(`📍 Filtering by area: ${location}`);
+      } else {
+        where[Op.or] = [{ city: location }, { area: location }];
+        console.log(`📍 Filtering by city OR area: ${location}`);
       }
     }
 
-    console.log(`After filter: ${filtered.length} users visible to current user (hasSupported: ${hasSupported})`);
-
-    // Build cards from filtered users
+    const users = await User.findAll({
+      attributes: ['id', 'name', 'lat', 'lng', 'bubblesCount', 'city', 'area', 'country', 'province',
+                   'queueSlots', 'slotProgress', 'isTopUser', 'createdAt', 
+                   [distanceFormula, 'distance']],
+      where,
+      having: literal(`distance < ${searchRadius}`),
+      order: [['createdAt', 'ASC']], // ✅ Order by signup date (oldest first)
+      limit: 50
+    });
+    
+    console.log(`Found ${users.length} users`);
+    
     const cards = [];
 
-    for (const u of filtered) {
-      const slots = parseInt(u.queueSlots) || 1;
-      const basePos = parseInt(u.queuePosition) || 0;
+    for (const u of users) {
       const dist = parseFloat(u.getDataValue('distance')).toFixed(1);
-
-      const progress = validateAndFixSlotProgress(u.slotProgress, slots);
+      const progress = validateAndFixSlotProgress(u.slotProgress, u.queueSlots);
       
-      console.log(`📊 User ${u.name} validated slotProgress:`, progress);
+      console.log(`📊 User ${u.name}:`, {
+        city: u.city,
+        area: u.area,
+        slots: u.queueSlots,
+        progressKeys: Object.keys(progress),
+        isTopUser: u.isTopUser,
+        createdAt: u.createdAt
+      });
 
-      const loc = [u.area, u.city].filter(Boolean).join(', ') || 'Unknown';
+      // ✅ Get queue positions from slotProgress keys
+      const queuePositions = Object.keys(progress)
+        .map(k => parseInt(k))
+        .filter(pos => !isNaN(pos))
+        .sort((a, b) => a - b);
+      
+      console.log(`🔢 User ${u.name} has queue positions:`, queuePositions);
 
-      for (let i = 0; i < slots; i++) {
-        const slotNum = i + 1;
-        const slotPos = basePos + i;
-        const prog = progress[slotNum.toString()] || 0;
+      // ✅ Check if this is a new user viewing the top user
+      const isViewingTopUser = (!hasSupported && !isInQueue && !!u.isTopUser);
+
+
+      console.log('🔍 DETAILED DEBUG FOR USER:', u.name);
+console.log('  hasSupported:', hasSupported);
+console.log('  isInQueue:', isInQueue);
+console.log('  u.isTopUser:', u.isTopUser);
+console.log('  u.isTopUser type:', typeof u.isTopUser);
+console.log('  u.isTopUser === 1:', u.isTopUser === 1);
+console.log('  !!u.isTopUser:', !!u.isTopUser);
+console.log('  isViewingTopUser:', isViewingTopUser);
+console.log('  queuePositions:', queuePositions);
+      
+      // ✅ NEW: If viewing top user, only show FIRST/LOWEST queue position
+      const positionsToShow = isViewingTopUser && queuePositions.length > 0
+        ? [Math.min(...queuePositions)] // Only show lowest queue position
+        : queuePositions; // Show all queue positions
+      
+      if (isViewingTopUser) {
+        console.log(`👁️ New user viewing top user - only showing Queue #${positionsToShow[0]}`);
+      }
+
+      // ✅ Build location display
+      const locationParts = [];
+      if (u.area && u.area.trim() !== '') locationParts.push(u.area);
+      if (u.city && u.city.trim() !== '' && u.city !== u.area) locationParts.push(u.city);
+      if (u.province && u.province.trim() !== '') locationParts.push(u.province);
+      if (u.country && u.country.trim() !== '') locationParts.push(u.country);
+      
+      const locationDisplay = locationParts.length > 0 
+        ? locationParts.join(', ') 
+        : 'Unknown Location';
+      
+      console.log(`📍 Location display for ${u.name}: "${locationDisplay}"`);
+
+      // Create cards for positions to show
+      for (const queuePos of positionsToShow) {
+        const prog = progress[queuePos.toString()] || 0;
         const pct = Math.round((prog / 400) * 100);
         
-        console.log(`  Slot ${slotNum}: progress = ${prog}/400 (${pct}%)`);
+        console.log(`  Queue ${queuePos}: progress = ${prog}/400 (${pct}%)`);
 
+        // ✅ Color based on queue position
         let color = '#10b981';
-        if (slotPos === 1) color = '#ef4444';
-        else if (slotPos <= 5) color = '#f59e0b';
-        else if (slotPos <= 10) color = '#3b82f6';
+        if (queuePos === 1) color = '#ef4444';
+        else if (queuePos <= 5) color = '#f59e0b';
+        else if (queuePos <= 10) color = '#3b82f6';
 
+        // ✅ Don't show queue number if viewing top user as new user
+        const showQueueNumber = !isViewingTopUser;
+        
+        let description;
+        if (showQueueNumber) {
+          description = `Queue #${queuePos} • ${prog}/400 (${pct}%) • ${locationDisplay}`;
+        } else {
+          description = `${prog}/400 (${pct}%) • ${locationDisplay}`;
+        }
+        
         cards.push({
-          id: `${u.id}-slot-${i}`,
+          id: `${u.id}-queue-${queuePos}`,
           userId: u.id,
           userName: u.name,
           bubbleAmount: u.bubblesCount,
           totalBubbles: u.bubblesCount,
           creatorColor: color,
-          description: `Queue #${slotPos} • ${prog}/400 (${pct}%) • ${loc}`,
+          description: description,
           distance: dist,
           lat: u.lat,
           lng: u.lng,
           city: u.city,
           area: u.area,
-          locationDisplay: loc,
-          queuePosition: slotPos,
+          province: u.province,
+          country: u.country,
+          locationDisplay: locationDisplay,
+          queuePosition: queuePos, // This is from slotProgress key
           queueProgress: prog,
           queueRequired: 400,
           queueProgressPercent: pct,
           remainingForSlot: 400 - prog,
-          queueSlots: slots,
-          slotIndex: i,
-          slotNumber: slotNum,
-          baseQueuePosition: basePos,
+          queueSlots: u.queueSlots,
+          actualQueuePosition: queuePos,
           isInQueue: true,
           canSupport: true,
-          isOwnCard: false
+          isOwnCard: false,
+          isTopUser: u.isTopUser === 1,
+          userCreatedAt: u.createdAt,
+          showQueueNumber: showQueueNumber, // ✅ Frontend uses this to show/hide queue number
+          isNewUserViewingTopUser: isViewingTopUser,
+          slotProgressKey: queuePos,
+          userSignupDate: u.createdAt
         });
       }
     }
 
+    // ✅ Sort cards by queue position (from slotProgress keys)
     cards.sort((a, b) => a.queuePosition - b.queuePosition);
-    console.log(`Returning ${cards.length} Nearby cards\n`);
+    
+    console.log(`\n📊 SUMMARY FOR USER ${currentUser.name}:`);
+    console.log(`  Has Supported: ${hasSupported}`);
+    console.log(`  Is In Queue: ${isInQueue}`);
+    console.log(`  User Signed Up: ${currentUser.createdAt}`);
+    console.log(`  Visibility Rule: ${hasSupported || isInQueue ? 'Show users signed up before me' : 'Show only top user (isTopUser=1)'}`);
+    console.log(`  Returning ${cards.length} cards`);
+    if (cards.length > 0) {
+      console.log(`  First card queue number visible: ${cards[0]?.showQueueNumber || false}`);
+      console.log(`  First card queue position: ${cards[0]?.queuePosition || 'N/A'}`);
+      console.log(`  First card user: ${cards[0]?.userName || 'N/A'}`);
+    }
+    console.log('========================================\n');
 
     res.json(cards);
   } catch (error) {
@@ -405,6 +471,7 @@ router.get('/nearby', async (req, res) => {
   }
 });
 
+// ... [Rest of the code remains the same] ...
 
 router.get('/incomplete-queue', async (req, res) => {
   try {
@@ -428,7 +495,6 @@ router.get('/incomplete-queue', async (req, res) => {
       return res.json([]);
     }
 
-    // ✅ FIXED: Use validation helper
     const slotProgress = validateAndFixSlotProgress(user.slotProgress, qSlots);
     
     console.log('Validated progress:', slotProgress);
@@ -436,38 +502,43 @@ router.get('/incomplete-queue', async (req, res) => {
     const cards = [];
     const REQUIRED = 400;
 
-    for (let slotNum = 1; slotNum <= qSlots; slotNum++) {
-      const progress = slotProgress[slotNum.toString()] || 0;
+    // ✅ Get actual queue positions from slotProgress
+    const queuePositions = Object.keys(slotProgress).map(k => parseInt(k)).sort((a, b) => a - b);
+    
+    for (const queuePos of queuePositions) {
+      const progress = slotProgress[queuePos.toString()] || 0;
       
       if (progress < REQUIRED) {
         const pct = Math.round((progress / REQUIRED) * 100);
-        const actualPos = qPos + (slotNum - 1);
         const loc = [user.area, user.city].filter(Boolean).join(', ') || 'Unknown';
         
-        console.log(`  Card ${slotNum}: Queue #${actualPos}, Progress ${progress}/${REQUIRED}`);
+        console.log(`  Card for Queue #${queuePos}: Progress ${progress}/${REQUIRED}`);
         
         cards.push({
-          id: `active-slot-${slotNum}`,
+          id: `active-queue-${queuePos}`,
           userId: user.id,
           userName: user.name,
           bubbleAmount: user.bubblesCount,
-          queuePosition: actualPos,
+          queuePosition: queuePos,
           queueProgress: progress,
           queueRequired: REQUIRED,
           queueProgressPercent: pct,
-          slotNumber: slotNum,
-          slotIndex: slotNum - 1,
+          actualQueuePosition: queuePos,
           supporterCount: 0,
           isOwnCard: true,
           creatorColor: '#f59e0b',
           area: user.area,
           city: user.city,
           locationDisplay: loc,
-          description: `Queue #${actualPos} • ${progress}/${REQUIRED} (${pct}%) • ${loc}`,
-          createdAt: new Date().toISOString()
+          description: `Queue #${queuePos} • ${progress}/${REQUIRED} (${pct}%) • ${loc}`,
+          createdAt: new Date().toISOString(),
+          isTopUser: user.isTopUser === 1 // ✅ Add the flag
         });
       }
     }
+
+    // Sort by actual queue position
+    cards.sort((a, b) => a.queuePosition - b.queuePosition);
 
     console.log(`Returning ${cards.length} Active cards\n`);
     res.json(cards);
@@ -1293,19 +1364,31 @@ router.post('/support', async (req, res) => {
       return res.status(400).json({ message: `Invalid slot. User has ${toUser.queueSlots} slots` });
     }
     
-    if (fromUser.queuePosition === 0) {
-      if (toUser.queuePosition !== 1) {
-        await t.rollback();
-        return res.status(400).json({ message: 'Must support Queue #1 to join' });
-      }
-    } else {
+    console.log('🔍 VALIDATION CHECK:', {
+  fromUserQueuePos: fromUser.queuePosition,
+  toUserId: toUser.id,
+  toUserName: toUser.name,
+  toUserIsTopUser: toUser.isTopUser,
+  toUserQueuePos: toUser.queuePosition,
+  checkWillPass: !!toUser.isTopUser  // ✅ Convert to boolean
+});
+
+if (fromUser.queuePosition === 0) {
+  // ✅ FIX: Handle both boolean true and number 1
+  if (!toUser.isTopUser) {
+    await t.rollback();
+    return res.status(400).json({ 
+      message: `You must support Queue #1 first before supporting other users.`
+    });
+  }
+} else {
       if (toUser.queuePosition >= fromUser.queuePosition) {
         await t.rollback();
         return res.status(400).json({ message: 'Can only support users above you' });
       }
     }
     
-    // ✅ CRITICAL FIX: Use validation helper for receiver
+    // ✅ Validate receiver's slotProgress
     let toSlotProgress = validateAndFixSlotProgress(toUser.slotProgress, toUser.queueSlots);
     console.log('TO Validated slotProgress:', toSlotProgress);
     
@@ -1373,7 +1456,6 @@ router.post('/support', async (req, res) => {
       console.log('Receiver now has', toUser.queueSlots, 'slots');
     }
     
-    // ✅ CRITICAL FIX: Always stringify for database storage
     toUser.slotProgress = JSON.stringify(toSlotProgress);
     console.log('TO Final slotProgress (stringified):', toUser.slotProgress);
     
@@ -1381,46 +1463,54 @@ router.post('/support', async (req, res) => {
     console.log(`Supporter gets ${slotsForSupporter} slots (${bubbleAmount}/100)`);
     
     if (slotsForSupporter > 0) {
-      // ✅ CRITICAL FIX: Use validation helper for supporter
+      // ✅ GET GLOBAL QUEUE TRACKER
+      const queueTracker = await QueueTracker.findByPk(1, { transaction: t, lock: t.LOCK.UPDATE });
+      if (!queueTracker) {
+        await t.rollback();
+        return res.status(500).json({ message: 'Queue tracker not initialized' });
+      }
+      
       let fromSlotProgress = validateAndFixSlotProgress(fromUser.slotProgress, fromUser.queueSlots || 0);
       
       if (fromUser.queuePosition === 0) {
-        const allQueued = await User.findAll({
-          where: { queuePosition: { [Op.gt]: 0 }, id: { [Op.ne]: toUser.id } },
-          attributes: ['id', 'queuePosition', 'queueSlots'],
-          transaction: t
-        });
+        // ✅ NEW USER JOINING QUEUE - Get next available queue position
+        const nextQueuePosition = queueTracker.lastQueuePosition + 1;
         
-        let maxPos = 0;
-        if (toUser.queuePosition > 0 && toUser.queueSlots > 0) {
-          maxPos = toUser.queuePosition + toUser.queueSlots - 1;
-        }
-        for (const u of allQueued) {
-          const uMax = u.queuePosition + (parseInt(u.queueSlots) || 1) - 1;
-          if (uMax > maxPos) maxPos = uMax;
-        }
-        
-        fromUser.queuePosition = maxPos + 1;
+        fromUser.queuePosition = nextQueuePosition;
         fromUser.queueSlots = slotsForSupporter;
         
+        // ✅ ASSIGN QUEUE POSITIONS AS KEYS
         fromSlotProgress = {};
-        for (let i = 1; i <= slotsForSupporter; i++) {
-          fromSlotProgress[i.toString()] = 0;
+        for (let i = 0; i < slotsForSupporter; i++) {
+          const queuePos = nextQueuePosition + i;
+          fromSlotProgress[queuePos.toString()] = 0;
         }
         
-        console.log(`Supporter JOINED at position ${fromUser.queuePosition} with ${slotsForSupporter} slots`);
+        // ✅ UPDATE GLOBAL TRACKER
+        queueTracker.lastQueuePosition = nextQueuePosition + slotsForSupporter - 1;
+        await queueTracker.save({ transaction: t });
+        
+        console.log(`✅ Supporter JOINED at queue position ${fromUser.queuePosition} with slots at positions:`, Object.keys(fromSlotProgress));
       } else {
+        // ✅ EXISTING USER GETTING MORE SLOTS - Assign from global counter
+        const nextQueuePosition = queueTracker.lastQueuePosition + 1;
+        
         const current = parseInt(fromUser.queueSlots) || 0;
         fromUser.queueSlots = current + slotsForSupporter;
         
-        for (let i = current + 1; i <= fromUser.queueSlots; i++) {
-          fromSlotProgress[i.toString()] = 0;
+        // ✅ ADD NEW QUEUE POSITIONS
+        for (let i = 0; i < slotsForSupporter; i++) {
+          const queuePos = nextQueuePosition + i;
+          fromSlotProgress[queuePos.toString()] = 0;
         }
         
-        console.log(`Supporter now has ${fromUser.queueSlots} slots`);
+        // ✅ UPDATE GLOBAL TRACKER
+        queueTracker.lastQueuePosition = nextQueuePosition + slotsForSupporter - 1;
+        await queueTracker.save({ transaction: t });
+        
+        console.log(`✅ Supporter now has ${fromUser.queueSlots} slots at positions:`, Object.keys(fromSlotProgress));
       }
       
-      // ✅ CRITICAL FIX: Always stringify for database storage
       fromUser.slotProgress = JSON.stringify(fromSlotProgress);
       console.log('FROM Final slotProgress (stringified):', fromUser.slotProgress);
     }
@@ -1431,6 +1521,9 @@ router.post('/support', async (req, res) => {
     if (slotCompleted) {
       await rebalanceQueuePositions(t);
     }
+
+    await updateTopUserFlag(t);
+
     
     const tx = await BubbleTransaction.create({
       fromUserId: req.user.id,
@@ -1445,10 +1538,17 @@ router.post('/support', async (req, res) => {
     
     await t.commit();
     
+    // 🔔 Send notification to receiver
+    NotificationScheduler.notifySupportReceived(
+      parseInt(toUserId),
+      fromUser.name,
+      bubbleAmount,
+      targetSlotNumber
+    );
+    
     const finalFrom = await User.findByPk(req.user.id);
     const finalTo = await User.findByPk(toUserId);
     
-    // ✅ Use validation helper for final response
     const fromProg = validateAndFixSlotProgress(finalFrom.slotProgress, finalFrom.queueSlots);
     const toProg = validateAndFixSlotProgress(finalTo.slotProgress, finalTo.queueSlots);
     
@@ -1471,6 +1571,7 @@ router.post('/support', async (req, res) => {
       supporterQueuePosition: finalFrom.queuePosition,
       queueSlotsOpened: slotsForSupporter,
       supporterTotalSlots: finalFrom.queueSlots,
+      supporterQueuePositions: Object.keys(fromProg),
       transaction: tx,
       user: {
         id: finalFrom.id,
@@ -1845,6 +1946,13 @@ router.post('/giveaway/donate', async (req, res) => {
           totalGiveback: d.totalGiveback,
           received: d.actualReward,
         });
+        
+        // 🔔 Send notification to each recipient
+        NotificationScheduler.notifyGiveawayReceived(
+          d.userId,
+          category,
+          d.actualReward
+        );
       }
     }
 
@@ -2818,6 +2926,13 @@ for (const cat of categoryDistribution) {
     });
 
     console.log(`   ✅ ${cat.category}: Gave ${cat.actualAmount} bubbles (had ${cat.holdAmount} in hold)`);
+    
+    // 🔔 Send notification for giveaway reward
+    NotificationScheduler.notifyGiveawayReceived(
+      fromUserId,
+      cat.category,
+      cat.actualAmount
+    );
   } else {
     rewardsBreakdown.push({
       category: cat.category,
@@ -2982,5 +3097,49 @@ router.post('/fix-all-slot-progress', async (req, res) => {
     res.status(400).json({ message: error.message });
   }
 });
+
+
+// ============================================================
+// HELPER: Calculate and Update Top User Flag
+// ============================================================
+async function updateTopUserFlag(transaction = null) {
+  try {
+    console.log('🔝 Updating top user flag...');
+    
+    const options = { 
+      where: { 
+        queuePosition: { [Op.gt]: 0 },
+        queueSlots: { [Op.gt]: 0 }
+      },
+      order: [['queuePosition', 'ASC']],
+      limit: 1,
+      attributes: ['id', 'name', 'queuePosition']
+    };
+    
+    if (transaction) options.transaction = transaction;
+    
+    // Get user with lowest queuePosition
+    const topUser = await User.findOne(options);
+    
+    if (!topUser) {
+      console.log('🔝 No users in queue');
+      return;
+    }
+    
+    console.log(`🔝 Top user: ${topUser.name} (queuePosition: ${topUser.queuePosition})`);
+    
+    // Reset all to 0
+    await User.update({ isTopUser: 0 }, { where: { isTopUser: 1 }, transaction });
+    
+    // Set top user to 1
+    await User.update({ isTopUser: 1 }, { where: { id: topUser.id }, transaction });
+    
+    console.log(`🔝 Set isTopUser=1 for ${topUser.name}`);
+    
+  } catch (error) {
+    console.error('🔝 Error:', error);
+    throw error;
+  }
+}
 
 module.exports = router;

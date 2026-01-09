@@ -6,6 +6,8 @@
   const { literal, Op } = require('sequelize');  // âœ… ADD THIS
 
   const sequelize = require('../config/database');
+  const NotificationScheduler = require('../schedulers/notificationScheduler');
+
 
   const router = express.Router();
 
@@ -936,204 +938,213 @@ router.get('/users/:id/bubble-breakdown', async (req, res) => {
   // routes/admin.js - FIXED Admin Support (shows admin name, not "admin_support")
 
   // Support a user (admin gives bubbles) - UPDATED
-  router.post('/users/:id/support', async (req, res) => {
-    try {
-      const { bubbleAmount, targetSlotNumber } = req.body;
-      const targetUserId = parseInt(req.params.id);
-      const adminId = req.user.id;
+  // Support a user (admin gives bubbles) - UPDATED
+router.post('/users/:id/support', async (req, res) => {
+  try {
+    const { bubbleAmount, targetSlotNumber } = req.body;
+    const targetUserId = parseInt(req.params.id);
+    const adminId = req.user.id;
 
-      console.log('Admin support request:', {
-        adminId,
-        targetUserId,
-        bubbleAmount,
-        targetSlotNumber
+    console.log('Admin support request:', {
+      adminId,
+      targetUserId,
+      bubbleAmount,
+      targetSlotNumber
+    });
+
+    // Validation...
+    if (bubbleAmount <= 0 || bubbleAmount > 400) {
+      return res.status(400).json({ 
+        message: 'Bubble amount must be between 1 and 400' 
       });
+    }
 
-      // Validation...
-      if (bubbleAmount <= 0 || bubbleAmount > 400) {
-        return res.status(400).json({ 
-          message: 'Bubble amount must be between 1 and 400' 
-        });
-      }
+    const admin = await User.findByPk(adminId);
+    const targetUser = await User.findByPk(targetUserId);
 
-      const admin = await User.findByPk(adminId);
-      const targetUser = await User.findByPk(targetUserId);
+    if (!admin || !targetUser) {
+      return res.status(404).json({ message: 'User not found' });
+    }
 
-      if (!admin || !targetUser) {
-        return res.status(404).json({ message: 'User not found' });
-      }
+    if (admin.bubblesCount < bubbleAmount) {
+      return res.status(400).json({
+        message: `Insufficient bubbles. You have ${admin.bubblesCount}, trying to send ${bubbleAmount}`
+      });
+    }
 
-      if (admin.bubblesCount < bubbleAmount) {
-        return res.status(400).json({
-          message: `Insufficient bubbles. You have ${admin.bubblesCount}, trying to send ${bubbleAmount}`
-        });
-      }
-
-      // ========== CRITICAL FIX: PROPERLY HANDLE slotProgress ==========
-      let slotProgress = {};
-      
-      // Debug what we have
-      console.log('DEBUG - Raw slotProgress from DB:', targetUser.slotProgress);
-      console.log('DEBUG - Type:', typeof targetUser.slotProgress);
-      
-      if (targetUser.slotProgress) {
+    // ========== CRITICAL FIX: PROPERLY HANDLE slotProgress ==========
+    let slotProgress = {};
+    
+    // Debug what we have
+    console.log('DEBUG - Raw slotProgress from DB:', targetUser.slotProgress);
+    console.log('DEBUG - Type:', typeof targetUser.slotProgress);
+    
+    if (targetUser.slotProgress) {
+      try {
+        // Remove any extra quotes or encoding
+        let raw = targetUser.slotProgress;
+        
+        // If it's a string with double quotes at start and end
+        if (typeof raw === 'string' && raw.startsWith('"') && raw.endsWith('"')) {
+          console.log('DEBUG - Removing outer quotes');
+          raw = raw.slice(1, -1);
+        }
+        
+        // Try to parse
+        console.log('DEBUG - Trying to parse:', raw);
+        slotProgress = JSON.parse(raw);
+        console.log('DEBUG - Parsed successfully:', slotProgress);
+      } catch (parseError) {
+        console.error('DEBUG - Parse error:', parseError);
+        console.error('DEBUG - Raw value that failed:', targetUser.slotProgress);
+        
+        // Try alternative parsing
         try {
-          // Remove any extra quotes or encoding
-          let raw = targetUser.slotProgress;
-          
-          // If it's a string with double quotes at start and end
-          if (typeof raw === 'string' && raw.startsWith('"') && raw.endsWith('"')) {
-            console.log('DEBUG - Removing outer quotes');
-            raw = raw.slice(1, -1);
-          }
-          
-          // Try to parse
-          console.log('DEBUG - Trying to parse:', raw);
-          slotProgress = JSON.parse(raw);
-          console.log('DEBUG - Parsed successfully:', slotProgress);
-        } catch (parseError) {
-          console.error('DEBUG - Parse error:', parseError);
-          console.error('DEBUG - Raw value that failed:', targetUser.slotProgress);
-          
-          // Try alternative parsing
-          try {
-            // Maybe it's already an object?
-            if (typeof targetUser.slotProgress === 'object') {
-              slotProgress = targetUser.slotProgress;
+          // Maybe it's already an object?
+          if (typeof targetUser.slotProgress === 'object') {
+            slotProgress = targetUser.slotProgress;
+          } else {
+            // Try unescaping
+            const unescaped = targetUser.slotProgress.replace(/\\"/g, '"');
+            if (unescaped.startsWith('"')) {
+              slotProgress = JSON.parse(unescaped.slice(1, -1));
             } else {
-              // Try unescaping
-              const unescaped = targetUser.slotProgress.replace(/\\"/g, '"');
-              if (unescaped.startsWith('"')) {
-                slotProgress = JSON.parse(unescaped.slice(1, -1));
-              } else {
-                slotProgress = JSON.parse(unescaped);
-              }
+              slotProgress = JSON.parse(unescaped);
             }
-          } catch (e) {
-            console.error('DEBUG - All parsing attempts failed:', e);
-            slotProgress = {};
           }
-        }
-      }
-      
-      console.log('DEBUG - Final slotProgress object:', slotProgress);
-      // ================================================================
-
-      const slotKey = targetSlotNumber.toString();
-      const currentProgress = parseInt(slotProgress[slotKey] || 0);
-      const newProgress = currentProgress + bubbleAmount;
-      const requiredPerSlot = 400;
-
-      console.log(`Admin Support - Slot ${targetSlotNumber}: ${currentProgress} + ${bubbleAmount} = ${newProgress} / ${requiredPerSlot}`);
-
-      // Update slot progress
-      slotProgress[slotKey] = newProgress;
-
-      // Deduct from admin
-      admin.bubblesCount -= bubbleAmount;
-
-      // Check if slot is completed
-      let slotCompleted = false;
-      let bubblesEarned = 0;
-
-      if (newProgress >= requiredPerSlot) {
-        slotCompleted = true;
-        bubblesEarned = requiredPerSlot;
-
-        // Handle slot completion
-        slotProgress[slotKey] = newProgress - requiredPerSlot;
-        if (slotProgress[slotKey] === 0) {
-          delete slotProgress[slotKey];
-        }
-
-        // Give bubbles to receiver
-        targetUser.bubblesCount += bubblesEarned;
-        targetUser.queueSlots = Math.max(0, targetUser.queueSlots - 1);
-
-        if (targetUser.queueSlots === 0) {
-          targetUser.queuePosition = 0;
-          targetUser.queueBubbles = 0;
+        } catch (e) {
+          console.error('DEBUG - All parsing attempts failed:', e);
           slotProgress = {};
         }
       }
-
-      // ========== CRITICAL FIX: SAVE PROPERLY ==========
-      console.log('DEBUG - Saving slotProgress:', slotProgress);
-      console.log('DEBUG - Stringified:', JSON.stringify(slotProgress));
-      
-      // Save as proper JSON string
-      targetUser.slotProgress = JSON.stringify(slotProgress);
-      // ================================================
-
-      // Save both users
-      await admin.save();
-      await targetUser.save();
-
-      console.log('DEBUG - After save, fetching fresh data...');
-
-      // Create transaction record
-      const transaction = await BubbleTransaction.create({
-        fromUserId: adminId,
-        toUserId: targetUserId,
-        bubbleAmount: bubbleAmount,
-        targetSlotNumber: targetSlotNumber,
-        type: 'support',
-        status: 'completed',
-        queuePosition: 0,
-        slotsOpened: 0,
-        description: `Admin support for slot ${targetSlotNumber}`,
-        giveaway: 0
-      });
-
-      // ========== CRITICAL: FETCH FRESH DATA ==========
-      const freshUser = await User.findByPk(targetUserId);
-      let updatedSlotProgress = {};
-      
-      if (freshUser.slotProgress) {
-        try {
-          // Parse fresh data
-          let raw = freshUser.slotProgress;
-          if (typeof raw === 'string' && raw.startsWith('"') && raw.endsWith('"')) {
-            raw = raw.slice(1, -1);
-          }
-          updatedSlotProgress = JSON.parse(raw);
-        } catch (e) {
-          console.error('Error parsing fresh slotProgress:', e);
-          updatedSlotProgress = {};
-        }
-      }
-      
-      console.log('DEBUG - Fresh slotProgress from DB:', updatedSlotProgress);
-      // ================================================
-
-      const responseData = {
-        message: slotCompleted
-          ? `Slot ${targetSlotNumber} completed! ${targetUser.name} earned ${bubblesEarned} bubbles!`
-          : `Supported slot ${targetSlotNumber}: ${newProgress}/${requiredPerSlot}`,
-        slotCompleted: slotCompleted,
-        slotNumber: targetSlotNumber,
-        currentProgress: newProgress,
-        slotProgress: parseInt(updatedSlotProgress[slotKey] || 0),
-        adminBubblesRemaining: admin.bubblesCount,
-        transaction: transaction,
-        debug: {
-          savedProgress: newProgress,
-          retrievedProgress: updatedSlotProgress[slotKey],
-          rawSlotProgress: freshUser.slotProgress
-        }
-      };
-
-      console.log('Admin support response:', responseData);
-      res.json(responseData);
-
-    } catch (error) {
-      console.error('Admin support error:', error);
-      res.status(400).json({ 
-        message: error.message || 'Admin support failed',
-        details: error.stack
-      });
     }
-  });
+    
+    console.log('DEBUG - Final slotProgress object:', slotProgress);
+    // ================================================================
+
+    const slotKey = targetSlotNumber.toString();
+    const currentProgress = parseInt(slotProgress[slotKey] || 0);
+    const newProgress = currentProgress + bubbleAmount;
+    const requiredPerSlot = 400;
+
+    console.log(`Admin Support - Slot ${targetSlotNumber}: ${currentProgress} + ${bubbleAmount} = ${newProgress} / ${requiredPerSlot}`);
+
+    // Update slot progress
+    slotProgress[slotKey] = newProgress;
+
+    // Deduct from admin
+    admin.bubblesCount -= bubbleAmount;
+
+    // Check if slot is completed
+    let slotCompleted = false;
+    let bubblesEarned = 0;
+
+    if (newProgress >= requiredPerSlot) {
+      slotCompleted = true;
+      bubblesEarned = requiredPerSlot;
+
+      // Handle slot completion
+      slotProgress[slotKey] = newProgress - requiredPerSlot;
+      if (slotProgress[slotKey] === 0) {
+        delete slotProgress[slotKey];
+      }
+
+      // Give bubbles to receiver
+      targetUser.bubblesCount += bubblesEarned;
+      targetUser.queueSlots = Math.max(0, targetUser.queueSlots - 1);
+
+      if (targetUser.queueSlots === 0) {
+        targetUser.queuePosition = 0;
+        targetUser.queueBubbles = 0;
+        slotProgress = {};
+      }
+    }
+
+    // ========== CRITICAL FIX: SAVE PROPERLY ==========
+    console.log('DEBUG - Saving slotProgress:', slotProgress);
+    console.log('DEBUG - Stringified:', JSON.stringify(slotProgress));
+    
+    // Save as proper JSON string
+    targetUser.slotProgress = JSON.stringify(slotProgress);
+    // ================================================
+
+    // Save both users
+    await admin.save();
+    await targetUser.save();
+
+    console.log('DEBUG - After save, fetching fresh data...');
+
+    // Create transaction record
+    const transaction = await BubbleTransaction.create({
+      fromUserId: adminId,
+      toUserId: targetUserId,
+      bubbleAmount: bubbleAmount,
+      targetSlotNumber: targetSlotNumber,
+      type: 'support',
+      status: 'completed',
+      queuePosition: 0,
+      slotsOpened: 0,
+      description: `Admin support for slot ${targetSlotNumber}`,
+      giveaway: 0
+    });
+
+    // ========== CRITICAL: FETCH FRESH DATA ==========
+    const freshUser = await User.findByPk(targetUserId);
+    let updatedSlotProgress = {};
+    
+    if (freshUser.slotProgress) {
+      try {
+        // Parse fresh data
+        let raw = freshUser.slotProgress;
+        if (typeof raw === 'string' && raw.startsWith('"') && raw.endsWith('"')) {
+          raw = raw.slice(1, -1);
+        }
+        updatedSlotProgress = JSON.parse(raw);
+      } catch (e) {
+        console.error('Error parsing fresh slotProgress:', e);
+        updatedSlotProgress = {};
+      }
+    }
+    
+    console.log('DEBUG - Fresh slotProgress from DB:', updatedSlotProgress);
+    // ================================================
+
+    // 🔔 Send notification to user about admin support
+    NotificationScheduler.notifyAdminSupport(
+      targetUserId,
+      admin.name,
+      bubbleAmount,
+      targetSlotNumber
+    );
+
+    const responseData = {
+      message: slotCompleted
+        ? `Slot ${targetSlotNumber} completed! ${targetUser.name} earned ${bubblesEarned} bubbles!`
+        : `Supported slot ${targetSlotNumber}: ${newProgress}/${requiredPerSlot}`,
+      slotCompleted: slotCompleted,
+      slotNumber: targetSlotNumber,
+      currentProgress: newProgress,
+      slotProgress: parseInt(updatedSlotProgress[slotKey] || 0),
+      adminBubblesRemaining: admin.bubblesCount,
+      transaction: transaction,
+      debug: {
+        savedProgress: newProgress,
+        retrievedProgress: updatedSlotProgress[slotKey],
+        rawSlotProgress: freshUser.slotProgress
+      }
+    };
+
+    console.log('Admin support response:', responseData);
+    res.json(responseData);
+
+  } catch (error) {
+    console.error('Admin support error:', error);
+    res.status(400).json({ 
+      message: error.message || 'Admin support failed',
+      details: error.stack
+    });
+  }
+});
 
 
 
@@ -1718,180 +1729,387 @@ router.get('/giveaway/distribution-preview/:category', async (req, res) => {
   // Approve offer request - Admin pays the shortfall
   // Approve offer request - Admin pays the shortfall
   // Approve offer request - Admin pays the shortfall - FIXED
-  router.put('/offer-requests/:id/approve', async (req, res) => {
-    const requestId = parseInt(req.params.id);
-    const adminId = req.user.id;
+  // Approve offer request - Admin pays the shortfall - FIXED WITH NOTIFICATION
+// Approve offer request - WITH DEBUGGING
+router.put('/offer-requests/:id/approve', async (req, res) => {
+  const requestId = parseInt(req.params.id);
+  const adminId = req.user.id;
 
-    // Validate ID
-    if (isNaN(requestId) || requestId <= 0) {
-      return res.status(400).json({ message: 'Invalid request ID' });
-    }
+  // Validate ID
+  if (isNaN(requestId) || requestId <= 0) {
+    return res.status(400).json({ message: 'Invalid request ID' });
+  }
 
-    const t = await sequelize.transaction();
-    try {
-      console.log(`Admin ${adminId} approving request ${requestId}`);
+  const t = await sequelize.transaction();
+  try {
+    console.log(`Admin ${adminId} approving request ${requestId}`);
 
-      // Get the offer request
-      const offerRequest = await OfferRequest.findByPk(requestId, {
-        include: [
-          {
-            model: User,
-            as: 'User',
-            attributes: ['id', 'name', 'email', 'bubblesCount']
-          }
-        ],
-        transaction: t,
-        lock: t.LOCK.UPDATE
-      });
-
-      if (!offerRequest) {
-        await t.rollback();
-        return res.status(404).json({ message: 'Offer request not found' });
-      }
-
-      if (offerRequest.status !== 'pending') {
-        await t.rollback();
-        return res.status(400).json({ message: 'Request is not pending' });
-      }
-
-      // Extract shortfall from adminNotes
-      let shortfall = 0;
-      if (offerRequest.adminNotes && offerRequest.adminNotes.includes('Shortfall:')) {
-        const match = offerRequest.adminNotes.match(/Shortfall: (\d+) bubbles/);
-        if (match) {
-          const parsedShortfall = parseInt(match[1]);
-          shortfall = isNaN(parsedShortfall) ? 0 : parsedShortfall;
+    // Get the offer request with Brand included
+    const offerRequest = await OfferRequest.findByPk(requestId, {
+      include: [
+        {
+          model: User,
+          as: 'User',
+          attributes: ['id', 'name', 'email', 'bubblesCount']
+        },
+        {
+          model: Brand,
+          as: 'Brand',
+          attributes: ['id', 'name']
+        },
+        {
+          model: Offer,
+          as: 'Offer',
+          attributes: ['id', 'title']
         }
-      }
+      ],
+      transaction: t,
+      lock: t.LOCK.UPDATE
+    });
 
-      if (shortfall <= 0) {
-        await t.rollback();
-        return res.status(400).json({ message: 'No shortfall found in this request' });
-      }
-
-      // Get admin user
-      const admin = await User.findByPk(adminId, {
-        transaction: t,
-        lock: t.LOCK.UPDATE
-      });
-
-      if (!admin) {
-        await t.rollback();
-        return res.status(404).json({ message: 'Admin not found' });
-      }
-
-      // Check if admin has enough bubbles
-      if (admin.bubblesCount < shortfall) {
-        await t.rollback();
-        return res.status(400).json({
-          message: `Insufficient bubbles. You have ${admin.bubblesCount}, need ${shortfall}`,
-          adminBubbles: admin.bubblesCount,
-          required: shortfall
-        });
-      }
-
-      // Deduct bubbles from admin
-      admin.bubblesCount -= shortfall;
-      await admin.save({ transaction: t });
-
-      // Add bubbles to user
-      const user = offerRequest.User;
-      user.bubblesCount += shortfall;
-      await user.save({ transaction: t });
-
-      // Create transaction record
-      // Create transaction record with clear description for user
-const brandName = offerRequest.Brand?.name || 'Unknown Brand';
-const offerTitle = offerRequest.Offer?.title || 'Offer';
-
-await BubbleTransaction.create({
-  fromUserId: adminId,
-  toUserId: user.id,
-  bubbleAmount: shortfall,
-  type: 'admin_offer_support', // ✅ NEW TYPE
-  status: 'completed',
-  description: `Offer Request: ${offerTitle} at ${brandName} - Admin Support: ${shortfall} bubbles`,
-  giveaway: 0
-}, { transaction: t });
-
-      // âœ… CHANGE STATUS TO 'completed' INSTEAD OF 'accepted'
-      offerRequest.status = 'completed';
-      offerRequest.redeemed = true;
-      offerRequest.adminNotes = `${offerRequest.adminNotes || ''}\n\nApproved by admin. ${shortfall} bubbles transferred. Offer completed on ${new Date().toLocaleString()}.`;
-      await offerRequest.save({ transaction: t });
-
-      await t.commit();
-
-      console.log(`âœ… Request approved and completed. Admin ${admin.name} paid ${shortfall} bubbles to ${user.name}`);
-
-      res.json({
-        success: true,
-        message: `Request approved and completed! ${shortfall} bubbles transferred to ${user.name}`,
-        transaction: {
-          fromAdmin: admin.name,
-          toUser: user.name,
-          amount: shortfall,
-          adminRemainingBubbles: admin.bubblesCount,
-          userNewBalance: user.bubblesCount
-        }
-      });
-
-    } catch (error) {
+    if (!offerRequest) {
       await t.rollback();
-      console.error('Approve request error:', error);
-      res.status(400).json({ message: error.message || 'Failed to approve request' });
+      return res.status(404).json({ message: 'Offer request not found' });
     }
-  });
+
+    if (offerRequest.status !== 'pending') {
+      await t.rollback();
+      return res.status(400).json({ message: 'Request is not pending' });
+    }
+
+    // Extract shortfall from adminNotes
+    let shortfall = 0;
+    if (offerRequest.adminNotes && offerRequest.adminNotes.includes('Shortfall:')) {
+      const match = offerRequest.adminNotes.match(/Shortfall: (\d+) bubbles/);
+      if (match) {
+        const parsedShortfall = parseInt(match[1]);
+        shortfall = isNaN(parsedShortfall) ? 0 : parsedShortfall;
+      }
+    }
+
+    if (shortfall <= 0) {
+      await t.rollback();
+      return res.status(400).json({ message: 'No shortfall found in this request' });
+    }
+
+    // Get admin user
+    const admin = await User.findByPk(adminId, {
+      transaction: t,
+      lock: t.LOCK.UPDATE
+    });
+
+    if (!admin) {
+      await t.rollback();
+      return res.status(404).json({ message: 'Admin not found' });
+    }
+
+    // Check if admin has enough bubbles
+    if (admin.bubblesCount < shortfall) {
+      await t.rollback();
+      return res.status(400).json({
+        message: `Insufficient bubbles. You have ${admin.bubblesCount}, need ${shortfall}`,
+        adminBubbles: admin.bubblesCount,
+        required: shortfall
+      });
+    }
+
+    // Deduct bubbles from admin
+    admin.bubblesCount -= shortfall;
+    await admin.save({ transaction: t });
+
+    // Add bubbles to user
+    const user = offerRequest.User;
+    user.bubblesCount += shortfall;
+    await user.save({ transaction: t });
+
+    // Get brand name for notification and transaction
+    const brandName = offerRequest.Brand?.name || 'Unknown Brand';
+    const offerTitle = offerRequest.Offer?.title || 'Offer';
+
+    // Create transaction record with clear description for user
+    await BubbleTransaction.create({
+      fromUserId: adminId,
+      toUserId: user.id,
+      bubbleAmount: shortfall,
+      type: 'admin_offer_support',
+      status: 'completed',
+      description: `Offer Request: ${offerTitle} at ${brandName} - Admin Support: ${shortfall} bubbles`,
+      giveaway: 0
+    }, { transaction: t });
+
+    // Update offer request status to 'completed'
+    offerRequest.status = 'completed';
+    offerRequest.redeemed = true;
+    offerRequest.adminNotes = `${offerRequest.adminNotes || ''}\n\nApproved by admin. ${shortfall} bubbles transferred. Offer completed on ${new Date().toLocaleString()}.`;
+    await offerRequest.save({ transaction: t });
+
+    await t.commit();
+
+    console.log(`✅ Request approved and completed. Admin ${admin.name} paid ${shortfall} bubbles to ${user.name}`);
+
+    // 🔔 DEBUGGING: Check if NotificationScheduler exists
+    console.log('🔔 DEBUG: Starting notification process...');
+    console.log(`🔔 DEBUG: User ID: ${user.id}, Brand: ${brandName}, Shortfall: ${shortfall}`);
+    
+    try {
+      // Check if NotificationScheduler is imported correctly
+      console.log('🔔 DEBUG: NotificationScheduler imported:', typeof NotificationScheduler);
+      console.log('🔔 DEBUG: notifyOfferApproved method exists:', typeof NotificationScheduler.notifyOfferApproved);
+      
+      // Try to send notification
+      console.log('🔔 DEBUG: Calling notifyOfferApproved...');
+      const notificationResult = await NotificationScheduler.notifyOfferApproved(
+        user.id,
+        brandName,
+        shortfall
+      );
+      
+      console.log('🔔 DEBUG: Notification sent successfully:', notificationResult);
+      
+    } catch (notifError) {
+      console.error('🔔 DEBUG: Notification failed:', notifError.message);
+      console.error('🔔 DEBUG: Full error:', notifError);
+      
+      // Try direct notification as fallback
+      try {
+        console.log('🔔 DEBUG: Trying direct notification fallback...');
+        const NotificationService = require('../services/notificationService');
+        const directResult = await NotificationService.sendToUser(user.id, {
+          title: '✅ Offer Approved!',
+          body: `Your offer at ${brandName} has been approved! Admin covered ${shortfall} bubbles.`,
+          type: 'offer_accepted',
+          data: {
+            brandName,
+            shortfallAmount: shortfall.toString(),
+            action: 'offer_approved'
+          }
+        });
+        console.log('🔔 DEBUG: Direct notification result:', directResult);
+      } catch (directError) {
+        console.error('🔔 DEBUG: Direct notification also failed:', directError.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Request approved and completed! ${shortfall} bubbles transferred to ${user.name}`,
+      transaction: {
+        fromAdmin: admin.name,
+        toUser: user.name,
+        amount: shortfall,
+        adminRemainingBubbles: admin.bubblesCount,
+        userNewBalance: user.bubblesCount
+      },
+      debug: {
+        notificationAttempted: true,
+        userNotified: user.id,
+        brandName,
+        shortfall
+      }
+    });
+
+  } catch (error) {
+    await t.rollback();
+    console.error('❌ Approve request error:', error);
+    res.status(400).json({ 
+      message: error.message || 'Failed to approve request',
+      stack: error.stack
+    });
+  }
+});
+
+// Reject offer request - WITH DEBUGGING
+router.put('/offer-requests/:id/reject', async (req, res) => {
+  const requestId = parseInt(req.params.id);
+  const adminId = req.user.id;
+
+  // Validate ID
+  if (isNaN(requestId) || requestId <= 0) {
+    return res.status(404).json({ message: 'Invalid request ID' });
+  }
+
+  try {
+    console.log(`Admin ${adminId} rejecting request ${requestId}`);
+
+    const offerRequest = await OfferRequest.findByPk(requestId, {
+      include: [
+        {
+          model: User,
+          as: 'User',
+          attributes: ['id', 'name', 'email']
+        },
+        {
+          model: Brand,
+          as: 'Brand',
+          attributes: ['id', 'name']
+        }
+      ]
+    });
+
+    if (!offerRequest) {
+      return res.status(404).json({ message: 'Offer request not found' });
+    }
+
+    if (offerRequest.status !== 'pending') {
+      return res.status(400).json({ message: 'Request is not pending' });
+    }
+
+    // Update status to rejected
+    offerRequest.status = 'rejected';
+    offerRequest.adminNotes = `${offerRequest.adminNotes || ''}\n\nRejected by admin on ${new Date().toLocaleString()}.`;
+    await offerRequest.save();
+
+    console.log(`✅ Request rejected for user ${offerRequest.User.name}`);
+
+    // 🔔 DEBUGGING: Send notification
+    const brandName = offerRequest.Brand?.name || 'Unknown Brand';
+    console.log('🔔 DEBUG: Starting rejection notification...');
+    console.log(`🔔 DEBUG: User ID: ${offerRequest.User.id}, Brand: ${brandName}`);
+    
+    try {
+      // Check if NotificationScheduler exists
+      console.log('🔔 DEBUG: NotificationScheduler imported:', typeof NotificationScheduler);
+      console.log('🔔 DEBUG: notifyOfferRejected method exists:', typeof NotificationScheduler.notifyOfferRejected);
+      
+      // Try to send notification
+      console.log('🔔 DEBUG: Calling notifyOfferRejected...');
+      const notificationResult = await NotificationScheduler.notifyOfferRejected(
+        offerRequest.User.id,
+        brandName
+      );
+      
+      console.log('🔔 DEBUG: Rejection notification sent successfully:', notificationResult);
+      
+    } catch (notifError) {
+      console.error('🔔 DEBUG: Rejection notification failed:', notifError.message);
+      
+      // Try direct notification as fallback
+      try {
+        console.log('🔔 DEBUG: Trying direct rejection notification fallback...');
+        const NotificationService = require('../services/notificationService');
+        const directResult = await NotificationService.sendToUser(offerRequest.User.id, {
+          title: '❌ Offer Not Approved',
+          body: `Your offer request at ${brandName} was not approved.`,
+          type: 'offer_rejected',
+          data: {
+            brandName,
+            action: 'offer_rejected'
+          }
+        });
+        console.log('🔔 DEBUG: Direct rejection notification result:', directResult);
+      } catch (directError) {
+        console.error('🔔 DEBUG: Direct rejection notification also failed:', directError.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Request from ${offerRequest.User.name} rejected`,
+      offerRequest,
+      debug: {
+        notificationAttempted: true,
+        userNotified: offerRequest.User.id,
+        brandName
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Reject request error:', error);
+    res.status(400).json({ 
+      message: error.message || 'Failed to reject request',
+      stack: error.stack
+    });
+  }
+});
+
+
+// Add this route to fix brand prices
+router.post('/brands/:id/set-price', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { price } = req.body;
+    
+    const brand = await Brand.findByPk(id);
+    if (!brand) {
+      return res.status(404).json({ message: 'Brand not found' });
+    }
+    
+    brand.price = price;
+    await brand.save();
+    
+    res.json({ 
+      success: true, 
+      message: `Price set to ${price} for ${brand.name}`,
+      brand 
+    });
+  } catch (error) {
+    console.error('Set price error:', error);
+    res.status(400).json({ message: error.message });
+  }
+});
 
   // Reject offer request - FIXED
-  router.put('/offer-requests/:id/reject', async (req, res) => {
-    const requestId = parseInt(req.params.id);
-    const adminId = req.user.id;
+  // Reject offer request - FIXED WITH NOTIFICATION
+router.put('/offer-requests/:id/reject', async (req, res) => {
+  const requestId = parseInt(req.params.id);
+  const adminId = req.user.id;
 
-    // Validate ID
-    if (isNaN(requestId) || requestId <= 0) {
-      return res.status(400).json({ message: 'Invalid request ID' });
+  // Validate ID
+  if (isNaN(requestId) || requestId <= 0) {
+    return res.status(400).json({ message: 'Invalid request ID' });
+  }
+
+  try {
+    console.log(`Admin ${adminId} rejecting request ${requestId}`);
+
+    const offerRequest = await OfferRequest.findByPk(requestId, {
+      include: [
+        {
+          model: User,
+          as: 'User',
+          attributes: ['id', 'name', 'email']
+        },
+        {
+          model: Brand,
+          as: 'Brand',
+          attributes: ['id', 'name']
+        }
+      ]
+    });
+
+    if (!offerRequest) {
+      return res.status(404).json({ message: 'Offer request not found' });
     }
 
-    try {
-      console.log(`Admin ${adminId} rejecting request ${requestId}`);
-
-      const offerRequest = await OfferRequest.findByPk(requestId, {
-        include: [
-          {
-            model: User,
-            as: 'User',
-            attributes: ['id', 'name', 'email']
-          }
-        ]
-      });
-
-      if (!offerRequest) {
-        return res.status(404).json({ message: 'Offer request not found' });
-      }
-
-      if (offerRequest.status !== 'pending') {
-        return res.status(400).json({ message: 'Request is not pending' });
-      }
-
-      // Update status to rejected
-      offerRequest.status = 'rejected';
-      offerRequest.adminNotes = `${offerRequest.adminNotes || ''}\n\nRejected by admin on ${new Date().toLocaleString()}.`;
-      await offerRequest.save();
-
-      console.log(`âœ… Request rejected for user ${offerRequest.User.name}`);
-
-      res.json({
-        success: true,
-        message: `Request from ${offerRequest.User.name} rejected`,
-        offerRequest
-      });
-
-    } catch (error) {
-      console.error('Reject request error:', error);
-      res.status(400).json({ message: error.message || 'Failed to reject request' });
+    if (offerRequest.status !== 'pending') {
+      return res.status(400).json({ message: 'Request is not pending' });
     }
-  });
+
+    // Update status to rejected
+    offerRequest.status = 'rejected';
+    offerRequest.adminNotes = `${offerRequest.adminNotes || ''}\n\nRejected by admin on ${new Date().toLocaleString()}.`;
+    await offerRequest.save();
+
+    console.log(`✅ Request rejected for user ${offerRequest.User.name}`);
+
+    // 🔔 Send notification to user about offer rejection
+    const brandName = offerRequest.Brand?.name || 'Unknown Brand';
+    NotificationScheduler.notifyOfferRejected(
+      offerRequest.User.id,
+      brandName
+    );
+
+    res.json({
+      success: true,
+      message: `Request from ${offerRequest.User.name} rejected`,
+      offerRequest
+    });
+
+  } catch (error) {
+    console.error('Reject request error:', error);
+    res.status(400).json({ message: error.message || 'Failed to reject request' });
+  }
+});
 
 
 
@@ -2525,76 +2743,123 @@ await BubbleTransaction.create({
   });
 
   // Update bubble request status (THIS IS THE KEY ROUTE YOU'RE MISSING)
-  router.put('/bubble-requests/:id', async (req, res) => {
-    try {
-      const requestId = parseInt(req.params.id);
-      const { status, adminNotes } = req.body;
-      const adminId = req.user.id;
+  // Update bubble request status - WITH NOTIFICATIONS
+router.put('/bubble-requests/:id', async (req, res) => {
+  try {
+    const requestId = parseInt(req.params.id);
+    const { status, adminNotes } = req.body;
+    const adminId = req.user.id;
 
-      // Map 'approved' to 'accepted' for database
-      const dbStatus = status === 'approved' ? 'accepted' : status;
+    // Map 'approved' to 'accepted' for database
+    const dbStatus = status === 'approved' ? 'accepted' : status;
 
-      if (!['pending', 'accepted', 'rejected', 'completed', 'cancelled'].includes(dbStatus)) {
-        return res.status(400).json({ message: 'Invalid status' });
-      }
-
-      const bubbleRequest = await OfferRequest.findByPk(requestId, {
-        include: [
-          {
-            model: User,
-            as: 'User',
-            attributes: ['id', 'name', 'email', 'bubblesCount']
-          }
-        ]
-      });
-
-      if (!bubbleRequest) {
-        return res.status(404).json({ message: 'Bubble request not found' });
-      }
-
-      const previousStatus = bubbleRequest.status;
-      bubbleRequest.status = dbStatus;
-      
-      if (adminNotes && adminNotes.trim()) {
-        bubbleRequest.adminNotes = `${bubbleRequest.adminNotes || ''}\n\nAdmin ${req.user.name} (${new Date().toLocaleString()}): ${adminNotes}`;
-      } else {
-        bubbleRequest.adminNotes = `${bubbleRequest.adminNotes || ''}\n\nStatus changed to ${dbStatus} by Admin ${req.user.name} on ${new Date().toLocaleString()}`;
-      }
-
-      await bubbleRequest.save();
-
-      console.log(`Admin ${req.user.name} changed bubble request ${requestId} from ${previousStatus} to ${dbStatus}`);
-
-      // Get updated request with all relations
-      const updatedRequest = await OfferRequest.findByPk(requestId, {
-        include: [
-          {
-            model: User,
-            as: 'User',
-            attributes: ['id', 'name', 'email', 'bubblesCount']
-          },
-          {
-            model: Offer,
-            as: 'Offer',
-            attributes: ['id', 'title', 'discount', 'type', 'description']
-          },
-          {
-            model: Brand,
-            as: 'Brand',
-            attributes: ['id', 'name', 'category', 'price', 'location']
-          }
-        ]
-      });
-
-      res.json({
-        message: 'Bubble request status updated successfully',
-        bubbleRequest: updatedRequest
-      });
-    } catch (error) {
-      console.error('Update bubble request error:', error);
-      res.status(400).json({ message: error.message });
+    if (!['pending', 'accepted', 'rejected', 'completed', 'cancelled'].includes(dbStatus)) {
+      return res.status(400).json({ message: 'Invalid status' });
     }
-  });
+
+    const bubbleRequest = await OfferRequest.findByPk(requestId, {
+      include: [
+        {
+          model: User,
+          as: 'User',
+          attributes: ['id', 'name', 'email', 'bubblesCount']
+        },
+        {
+          model: Brand,
+          as: 'Brand',
+          attributes: ['id', 'name']
+        },
+        {
+          model: Offer,
+          as: 'Offer',
+          attributes: ['id', 'title']
+        }
+      ]
+    });
+
+    if (!bubbleRequest) {
+      return res.status(404).json({ message: 'Bubble request not found' });
+    }
+
+    const previousStatus = bubbleRequest.status;
+    bubbleRequest.status = dbStatus;
+    
+    if (adminNotes && adminNotes.trim()) {
+      bubbleRequest.adminNotes = `${bubbleRequest.adminNotes || ''}\n\nAdmin ${req.user.name} (${new Date().toLocaleString()}): ${adminNotes}`;
+    } else {
+      bubbleRequest.adminNotes = `${bubbleRequest.adminNotes || ''}\n\nStatus changed to ${dbStatus} by Admin ${req.user.name} on ${new Date().toLocaleString()}`;
+    }
+
+    await bubbleRequest.save();
+
+    console.log(`Admin ${req.user.name} changed bubble request ${requestId} from ${previousStatus} to ${dbStatus}`);
+
+    // 🔔 ADD NOTIFICATION LOGIC HERE
+    if (previousStatus === 'pending' && dbStatus === 'accepted') {
+      const brandName = bubbleRequest.Brand?.name || 'Unknown Brand';
+      const offerTitle = bubbleRequest.Offer?.title || 'Offer';
+      
+      console.log(`🔔 Sending approval notification to user ${bubbleRequest.User.id}`);
+      
+      try {
+        await NotificationScheduler.notifyOfferApproved(
+          bubbleRequest.User.id,
+          brandName,
+          0 // No shortfall for bubble-requests endpoint
+        );
+        console.log('✅ Approval notification sent');
+      } catch (notifError) {
+        console.error('❌ Approval notification failed:', notifError);
+      }
+    }
+    
+    if (previousStatus === 'pending' && dbStatus === 'rejected') {
+      const brandName = bubbleRequest.Brand?.name || 'Unknown Brand';
+      
+      console.log(`🔔 Sending rejection notification to user ${bubbleRequest.User.id}`);
+      
+      try {
+        await NotificationScheduler.notifyOfferRejected(
+          bubbleRequest.User.id,
+          brandName
+        );
+        console.log('✅ Rejection notification sent');
+      } catch (notifError) {
+        console.error('❌ Rejection notification failed:', notifError);
+      }
+    }
+
+    // Get updated request with all relations
+    const updatedRequest = await OfferRequest.findByPk(requestId, {
+      include: [
+        {
+          model: User,
+          as: 'User',
+          attributes: ['id', 'name', 'email', 'bubblesCount']
+        },
+        {
+          model: Offer,
+          as: 'Offer',
+          attributes: ['id', 'title', 'discount', 'type', 'description']
+        },
+        {
+          model: Brand,
+          as: 'Brand',
+          attributes: ['id', 'name', 'category', 'price', 'location']
+        }
+      ]
+    });
+
+    res.json({
+      message: 'Bubble request status updated successfully',
+      bubbleRequest: updatedRequest,
+      notificationSent: true
+    });
+  } catch (error) {
+    console.error('Update bubble request error:', error);
+    res.status(400).json({ message: error.message });
+  }
+});
 
   // Add admin notes to bubble request
   router.post('/bubble-requests/:id/notes', async (req, res) => {
