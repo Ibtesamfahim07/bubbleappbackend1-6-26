@@ -1310,7 +1310,6 @@ router.get('/support-bubbles-for-redemption', auth, async (req, res) => {
   try {
     const userId = req.user.id;
     
-    // Get total support received
     const [supportReceivedResult] = await sequelize.query(`
       SELECT SUM(bubbleAmount) as totalSupportReceived
       FROM bubble_transactions
@@ -1324,14 +1323,13 @@ router.get('/support-bubbles-for-redemption', auth, async (req, res) => {
 
     const totalSupportReceived = parseInt(supportReceivedResult?.totalSupportReceived || 0);
 
-    // Get support used for offer redemptions
+    // ✅ FIXED: Removed description filter - giveaway=0 already means support bubbles
     const [supportUsedResult] = await sequelize.query(`
       SELECT SUM(bubbleAmount) as totalSupportUsed
       FROM bubble_transactions
       WHERE fromUserId = ?
         AND type = 'offer_redemption'
         AND giveaway = 0
-        AND description LIKE '%Support Bubbles%'
         AND status = 'completed'
     `, {
       replacements: [userId],
@@ -1480,7 +1478,7 @@ router.post('/request-admin-support', auth, async (req, res) => {
   try {
     const { offerId, brandId, category } = req.body;
     const userId = req.user.id;
-    const fixedPrice = 500; // Fixed amount for admin support
+    const fixedPrice = 500;
 
     console.log('Admin support request:', { userId, offerId, brandId, category });
 
@@ -1489,7 +1487,6 @@ router.post('/request-admin-support', auth, async (req, res) => {
       return res.status(400).json({ message: 'offerId, brandId, and category are required' });
     }
 
-    // Get user with lock
     const user = await User.findByPk(userId, { 
       transaction: t, 
       lock: t.LOCK.UPDATE 
@@ -1500,7 +1497,6 @@ router.post('/request-admin-support', auth, async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Get offer and brand details
     const offer = await Offer.findByPk(offerId, { transaction: t });
     const brand = await Brand.findByPk(brandId, { transaction: t });
 
@@ -1524,6 +1520,7 @@ router.post('/request-admin-support', auth, async (req, res) => {
 
     const totalSupportReceived = parseInt(supportReceivedResult?.totalSupportReceived || 0);
 
+    // ✅ FIXED: Removed description filter - giveaway=0 already means support bubbles
     const [supportUsedResult] = await sequelize.query(`
       SELECT SUM(bubbleAmount) as totalSupportUsed
       FROM bubble_transactions
@@ -1542,7 +1539,6 @@ router.post('/request-admin-support', auth, async (req, res) => {
 
     console.log(`Support check: Received=${totalSupportReceived}, Used=${totalSupportUsed}, Available=${availableSupportBubbles}`);
 
-    // Validate 100% support required
     if (availableSupportBubbles < fixedPrice) {
       await t.rollback();
       return res.status(400).json({
@@ -1562,7 +1558,8 @@ router.post('/request-admin-support', auth, async (req, res) => {
       type: 'offer_redemption',
       status: 'completed',
       giveaway: 0, // ✅ NO GIVEAWAY
-      description: `${category} Admin Support Request (Support Bubbles Only) - Offer #${offerId}`
+      description: `${category} Offer Redemption (Support Bubbles) - Admin Support Request - Offer #${offerId}`
+
     }, { transaction: t });
 
     console.log(`✅ Created support transaction: ${fixedPrice} bubbles (100% support)`);
@@ -1901,7 +1898,63 @@ router.post('/complete-offer/:requestId', auth, async (req, res) => {
   }
 });
 
-
+// Add this temporary diagnostic endpoint to check what transactions exist
+router.get('/debug-support-bubbles/:userId', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    // Get ALL support received
+    const [received] = await sequelize.query(`
+      SELECT id, bubbleAmount, description, createdAt
+      FROM bubble_transactions
+      WHERE toUserId = ?
+        AND type = 'support'
+        AND status = 'completed'
+      ORDER BY createdAt DESC
+    `, {
+      replacements: [userId],
+      type: sequelize.QueryTypes.SELECT
+    });
+    
+    // Get ALL redemptions (support used)
+    const [used] = await sequelize.query(`
+      SELECT id, bubbleAmount, giveaway, description, createdAt
+      FROM bubble_transactions
+      WHERE fromUserId = ?
+        AND type = 'offer_redemption'
+        AND giveaway = 0
+        AND status = 'completed'
+      ORDER BY createdAt DESC
+    `, {
+      replacements: [userId],
+      type: sequelize.QueryTypes.SELECT
+    });
+    
+    const totalReceived = received.reduce((sum, t) => sum + t.bubbleAmount, 0);
+    const totalUsed = used.reduce((sum, t) => sum + t.bubbleAmount, 0);
+    
+    // Check which ones match the LIKE pattern
+    const matchingPattern = used.filter(t => t.description.includes('Support Bubbles'));
+    const notMatchingPattern = used.filter(t => !t.description.includes('Support Bubbles'));
+    
+    res.json({
+      summary: {
+        totalReceived,
+        totalUsed,
+        available: totalReceived - totalUsed,
+        matchingPatternCount: matchingPattern.length,
+        notMatchingPatternCount: notMatchingPattern.length
+      },
+      receivedTransactions: received,
+      usedTransactions: used,
+      transactionsMatchingPattern: matchingPattern,
+      transactionsNotMatchingPattern: notMatchingPattern
+    });
+    
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
 
 
 module.exports = router;
