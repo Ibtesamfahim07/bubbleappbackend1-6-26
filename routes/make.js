@@ -1472,15 +1472,27 @@ router.get('/all-giveaway-bubbles', auth, async (req, res) => {
 // Request admin to pay for offer - Fixed 500 PKR
 // ==================== ADMIN SUPPORT REQUEST ====================
 // Request admin to pay for offer - Fixed 500 PKR (100% SUPPORT BUBBLES)
+// ==================== ADMIN SUPPORT REQUEST ====================
+// Request admin to pay for offer - FIXED 500 PKR (100% SUPPORT BUBBLES)
+// COPY THIS ENTIRE ENDPOINT TO REPLACE THE EXISTING ONE IN routes/make.js
+
 router.post('/request-admin-support', auth, async (req, res) => {
   const t = await sequelize.transaction();
   
   try {
-    const { offerId, brandId, category } = req.body;
+    const { offerId, brandId, category, price } = req.body; // ✅ Accept price from frontend
     const userId = req.user.id;
-    const fixedPrice = 500;
+    
+    // ✅ Validate price (must be multiple of 500)
+    if (!price || price <= 0 || price % 500 !== 0) {
+      await t.rollback();
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid price. Price must be a positive multiple of 500.' 
+      });
+    }
 
-    console.log('Admin support request:', { userId, offerId, brandId, category });
+    console.log('Admin support request:', { userId, offerId, brandId, category, price });
 
     if (!offerId || !brandId || !category) {
       await t.rollback();
@@ -1539,22 +1551,24 @@ router.post('/request-admin-support', auth, async (req, res) => {
 
     console.log(`Support check: Received=${totalSupportReceived}, Used=${totalSupportUsed}, Available=${availableSupportBubbles}`);
 
-    if (availableSupportBubbles < fixedPrice) {
+    // ✅ FIXED: Use 'price' not 'fixedPrice'
+    if (availableSupportBubbles < price) {
       await t.rollback();
       return res.status(400).json({
         success: false,
-        message: `Insufficient support bubbles. Admin support requires ${fixedPrice} support bubbles.`,
-        required: fixedPrice,
+        message: `Insufficient support bubbles. Admin support requires ${price} support bubbles.`,
+        required: price,
         available: availableSupportBubbles,
-        shortfall: fixedPrice - availableSupportBubbles
+        shortfall: price - availableSupportBubbles
       });
     }
 
     // ============ CREATE SUPPORT TRANSACTION (100% SUPPORT) ============
+    // ✅ FIXED: Use 'price' not 'Price'
     await BubbleTransaction.create({
       fromUserId: userId,
       toUserId: userId,
-      bubbleAmount: fixedPrice,
+      bubbleAmount: price,  // ✅ FIXED: lowercase 'price'
       type: 'offer_redemption',
       status: 'completed',
       giveaway: 0, // ✅ NO GIVEAWAY
@@ -1562,9 +1576,10 @@ router.post('/request-admin-support', auth, async (req, res) => {
 
     }, { transaction: t });
 
-    console.log(`✅ Created support transaction: ${fixedPrice} bubbles (100% support)`);
+    console.log(`✅ Created support transaction: ${price} bubbles (100% support)`);
 
     // Create OfferRequest for admin to review
+    // ✅ FIXED: Use 'price' not 'Price'
     const offerRequest = await OfferRequest.create({
       userId,
       brandId,
@@ -1573,9 +1588,9 @@ router.post('/request-admin-support', auth, async (req, res) => {
       scheduledTime: new Date().toTimeString().split(' ')[0],
       status: 'Pending', // ✅ Mark as completed immediately
       redeemed: true,
-      totalAmount: fixedPrice,
-      adminNotes: `Admin Support Request - Fixed amount: PKR ${fixedPrice}\n` +
-                  `Payment: 100% Support Bubbles (${fixedPrice} support + 0 giveaway)\n` +
+      totalAmount: price,  // ✅ FIXED: use 'price'
+      adminNotes: `Admin Support Request - Fixed amount: PKR ${price}\n` +
+                  `Payment: 100% Support Bubbles (${price} support + 0 giveaway)\n` +
                   `Category: ${category}\n` +
                   `Requested by: ${user.name} (${user.email})\n` +
                   `Offer: ${offer.title}\n` +
@@ -1588,14 +1603,14 @@ router.post('/request-admin-support', auth, async (req, res) => {
 
     res.json({
       success: true,
-      message: `Admin support request completed! Used ${fixedPrice} support bubbles (0 giveaway).`,
+      message: `Admin support request completed! Used ${price} support bubbles (0 giveaway).`,
       request: {
         id: offerRequest.id,
         offerId,
         brandId,
         category,
-        amount: fixedPrice,
-        usedSupportBubbles: fixedPrice,
+        amount: price,  // ✅ FIXED: use 'price'
+        usedSupportBubbles: price,  // ✅ FIXED: use 'price'
         usedGiveawayBubbles: 0,
         status: 'completed',
         createdAt: offerRequest.createdAt
