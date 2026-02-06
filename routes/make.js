@@ -1972,4 +1972,165 @@ router.get('/debug-support-bubbles/:userId', async (req, res) => {
 });
 
 
+/////////////////////////////////////////////////////refund//////////////////////////////////
+
+
+
+router.post('/refund-admin-support', auth, async (req, res) => {
+  const t = await sequelize.transaction();
+  
+  try {
+    const { offerId, brandId, category, price } = req.body;
+    const userId = req.user.id;
+    
+    console.log('\n🔄 === REFUND ADMIN SUPPORT REQUEST ===');
+    console.log('User ID:', userId);
+    console.log('Offer ID:', offerId);
+    console.log('Brand ID:', brandId);
+    console.log('Category:', category);
+    console.log('Price to refund:', price);
+
+    // Validate inputs
+    if (!offerId || !brandId || !category || !price) {
+      await t.rollback();
+      return res.status(400).json({ 
+        success: false,
+        message: 'offerId, brandId, category, and price are required' 
+      });
+    }
+
+    if (price <= 0 || price % 500 !== 0) {
+      await t.rollback();
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid refund amount. Must be a positive multiple of 500.' 
+      });
+    }
+
+    // ============ FIND THE MOST RECENT ADMIN SUPPORT TRANSACTION ============
+    // This matches what /request-admin-support creates:
+    //   fromUserId: userId, toUserId: userId, bubbleAmount: 500,
+    //   type: 'offer_redemption', giveaway: 0, status: 'completed',
+    //   description LIKE '%Admin Support Request%Offer #${offerId}%'
+    const lastTransaction = await BubbleTransaction.findOne({
+      where: {
+        fromUserId: userId,
+        toUserId: userId,
+        bubbleAmount: price,
+        type: 'offer_redemption',
+        giveaway: 0,
+        status: 'completed',
+        description: {
+          [Op.and]: [
+            { [Op.like]: `%Admin Support Request%` },
+            { [Op.like]: `%Offer #${offerId}%` }
+          ]
+        }
+      },
+      order: [['createdAt', 'DESC']],
+      transaction: t
+    });
+
+    if (!lastTransaction) {
+      await t.rollback();
+      return res.status(404).json({ 
+        success: false,
+        message: 'No matching admin support transaction found to refund for this offer.' 
+      });
+    }
+
+    console.log('✅ Found transaction to refund:', lastTransaction.id, '| Description:', lastTransaction.description);
+
+    // ============ DELETE THE BUBBLE TRANSACTION ============
+    // Deleting this record reduces "totalSupportUsed" in the support-bubbles-for-redemption query,
+    // which automatically increases available support bubbles
+    const deletedTxId = lastTransaction.id;
+    await lastTransaction.destroy({ transaction: t });
+    console.log('✅ Deleted BubbleTransaction:', deletedTxId);
+
+    // ============ FIND AND DELETE THE CORRESPONDING OFFER REQUEST ============
+    const lastOfferRequest = await OfferRequest.findOne({
+      where: {
+        userId,
+        offerId,
+        brandId,
+        redeemed: true,
+        adminNotes: {
+          [Op.like]: `%Admin Support Request%`
+        }
+      },
+      order: [['createdAt', 'DESC']],
+      transaction: t
+    });
+
+    let deletedRequestId = null;
+    if (lastOfferRequest) {
+      deletedRequestId = lastOfferRequest.id;
+      await lastOfferRequest.destroy({ transaction: t });
+      console.log('✅ Deleted OfferRequest:', deletedRequestId);
+    } else {
+      console.log('⚠️ No matching OfferRequest found (may already be deleted)');
+    }
+
+    // ============ COMMIT THE REFUND ============
+    await t.commit();
+    console.log('✅ Refund committed successfully');
+
+    // ============ CALCULATE UPDATED SUPPORT BUBBLES ============
+    // Same query as /support-bubbles-for-redemption
+    const [supportReceivedResult] = await sequelize.query(`
+      SELECT COALESCE(SUM(bubbleAmount), 0) as totalSupportReceived
+      FROM bubble_transactions
+      WHERE toUserId = ?
+        AND type = 'support'
+        AND status = 'completed'
+    `, {
+      replacements: [userId],
+      type: sequelize.QueryTypes.SELECT
+    });
+
+    const totalSupportReceived = parseInt(supportReceivedResult?.totalSupportReceived || 0);
+
+    const [supportUsedResult] = await sequelize.query(`
+      SELECT COALESCE(SUM(bubbleAmount), 0) as totalSupportUsed
+      FROM bubble_transactions
+      WHERE fromUserId = ?
+        AND type = 'offer_redemption'
+        AND giveaway = 0
+        AND status = 'completed'
+    `, {
+      replacements: [userId],
+      type: sequelize.QueryTypes.SELECT
+    });
+
+    const totalSupportUsed = parseInt(supportUsedResult?.totalSupportUsed || 0);
+    const availableSupportBubbles = Math.max(0, totalSupportReceived - totalSupportUsed);
+
+    console.log(`✅ After refund - Support: Received=${totalSupportReceived}, Used=${totalSupportUsed}, Available=${availableSupportBubbles}`);
+
+    res.json({
+      success: true,
+      message: `Refunded ${price} support bubbles successfully.`,
+      refund: {
+        offerId,
+        brandId,
+        category,
+        refundedAmount: price,
+        deletedTransactionId: deletedTxId,
+        deletedOfferRequestId: deletedRequestId,
+        availableSupportBubblesAfter: availableSupportBubbles
+      }
+    });
+
+  } catch (error) {
+    await t.rollback();
+    console.error('❌ REFUND ERROR:', error);
+    res.status(400).json({ 
+      success: false,
+      message: error.message || 'Failed to process refund' 
+    });
+  }
+});
+
+
 module.exports = router;
