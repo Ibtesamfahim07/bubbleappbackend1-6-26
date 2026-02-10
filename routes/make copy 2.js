@@ -533,21 +533,21 @@ const usedResult = await BubbleTransaction.findAll({
 
 // In /redeem-offer endpoint - FIXED VERSION
 router.post('/redeem-offer', auth, async (req, res) => {
-  const { offerId, brandId, category } = req.body; // âœ… REMOVED price from body
+  const { offerId, brandId, category } = req.body; // ✅ REMOVED price from body
   const userId = req.user.id;
 
-  console.log('\nðŸŽ¯ === OFFER REDEMPTION REQUEST (BLUE BUTTON - 500 PKR FIXED) ===');
+  console.log('\n🎯 === OFFER REDEMPTION REQUEST (BLUE BUTTON - 500 PKR FIXED) ===');
   console.log('User ID:', userId);
   console.log('Offer ID:', offerId);
   console.log('Brand ID:', brandId);
   console.log('Category:', category);
 
-  // âœ… USE FIXED PRICE OF 500 PKR
+  // ✅ USE FIXED PRICE OF 500 PKR
   const FIXED_PRICE = 500; // Blue button always uses 500 PKR
 
   // Validation - removed price check since we use fixed price
   if (!offerId || !brandId || !category) {
-    console.error('âŒ Missing required fields:', { offerId, brandId, category });
+    console.error('❌ Missing required fields:', { offerId, brandId, category });
     return res.status(400).json({ 
       success: false,
       message: 'Missing required redemption data',
@@ -559,7 +559,7 @@ router.post('/redeem-offer', auth, async (req, res) => {
     });
   }
 
-  // âœ… Price is always positive (500)
+  // ✅ Price is always positive (500)
   console.log('Fixed Price:', FIXED_PRICE);
 
   const t = await sequelize.transaction();
@@ -591,8 +591,8 @@ router.post('/redeem-offer', auth, async (req, res) => {
       });
     }
 
-    console.log('âœ… Offer and Brand verified');
-    console.log(`âœ… Using fixed price: ${FIXED_PRICE} PKR`);
+    console.log('✅ Offer and Brand verified');
+    console.log(`✅ Using fixed price: ${FIXED_PRICE} PKR`);
 
     // ============ GIVEAWAY BUBBLES CALCULATION ============
     const categoryMap = {
@@ -621,7 +621,7 @@ router.post('/redeem-offer', auth, async (req, res) => {
                                   makeSettingResult[0].allowOnMake === true;
         }
       } catch (settingError) {
-        console.log('âš ï¸ Could not check make settings:', settingError.message);
+        console.log('⚠️ Could not check make settings:', settingError.message);
       }
     }
 
@@ -632,7 +632,7 @@ router.post('/redeem-offer', auth, async (req, res) => {
       const receivedResult = await BubbleTransaction.findAll({
   where: {
     toUserId: userId,
-    type: { [Op.ne]: 'offer_redemption' },  // â† ADD THIS LINE
+    type: { [Op.ne]: 'offer_redemption' },  // ← ADD THIS LINE
     [Op.or]: [
       { description: `${giveawayCategory} Giveaway Distribution` },
             { description: `${giveawayCategory} Giveaway Reward` },
@@ -663,7 +663,7 @@ router.post('/redeem-offer', auth, async (req, res) => {
       const totalUsed = parseInt(usedResult[0]?.totalUsed || 0);
       availableGiveawayBubbles = Math.max(0, totalReceived - totalUsed);
       
-      console.log(`ðŸ’° Giveaway: ${giveawayCategory}, Received: ${totalReceived}, Used: ${totalUsed}, Available: ${availableGiveawayBubbles}`);
+      console.log(`💰 Giveaway: ${giveawayCategory}, Received: ${totalReceived}, Used: ${totalUsed}, Available: ${availableGiveawayBubbles}`);
     }
 
     // ============ SUPPORT BUBBLES CALCULATION ============
@@ -698,10 +698,10 @@ router.post('/redeem-offer', auth, async (req, res) => {
     const totalSupportUsed = parseInt(usedSupportResult?.totalSupportUsed || 0);
     const availableSupportBubbles = Math.max(0, totalSupportReceived - totalSupportUsed);
 
-    console.log(`ðŸ’° Support: Received: ${totalSupportReceived}, Used: ${totalSupportUsed}, Available: ${availableSupportBubbles}`);
+    console.log(`💰 Support: Received: ${totalSupportReceived}, Used: ${totalSupportUsed}, Available: ${availableSupportBubbles}`);
 
     // ============ REDEMPTION LOGIC (50% Support Minimum) ============
-    const halfPrice = Math.ceil(FIXED_PRICE / 2); // âœ… Use FIXED_PRICE (250)
+    const halfPrice = Math.ceil(FIXED_PRICE / 2); // ✅ Use FIXED_PRICE (250)
 
     // RULE 1: Support must be at least 50%
     if (availableSupportBubbles < halfPrice) {
@@ -712,7 +712,7 @@ router.post('/redeem-offer', auth, async (req, res) => {
         required: halfPrice,
         available: availableSupportBubbles,
         shortfall: halfPrice - availableSupportBubbles,
-        price: FIXED_PRICE // âœ… Use FIXED_PRICE
+        price: FIXED_PRICE // ✅ Use FIXED_PRICE
       });
     }
 
@@ -739,7 +739,7 @@ router.post('/redeem-offer', auth, async (req, res) => {
     }
 
     const totalUsed = usedGiveawayBubbles + usedSupportBubbles;
-    console.log(`âœ… Redemption: Giveaway=${usedGiveawayBubbles}, Support=${usedSupportBubbles}, Total=${totalUsed}`);
+    console.log(`✅ Redemption: Giveaway=${usedGiveawayBubbles}, Support=${usedSupportBubbles}, Total=${totalUsed}`);
 
     // ============ CREATE TRANSACTIONS ============
     
@@ -753,9 +753,9 @@ if (usedGiveawayBubbles > 0) {
     type: 'offer_redemption',
     status: 'completed',
     giveaway: 1,
-    description: `${giveawayCategory} Giveaway Redemption - ${category} Offer #${offerId} - Fixed 500 PKR` // âœ… FIXED
+    description: `${giveawayCategory} Giveaway Redemption - ${category} Offer #${offerId} - Fixed 500 PKR` // ✅ FIXED
   }, { transaction: t });
-  console.log(`âœ… Giveaway transaction created: ${usedGiveawayBubbles} bubbles`);
+  console.log(`✅ Giveaway transaction created: ${usedGiveawayBubbles} bubbles`);
 }
 
     // Record support transaction
@@ -769,7 +769,7 @@ if (usedGiveawayBubbles > 0) {
         giveaway: 0,
         description: `${category} Offer Redemption (Support Bubbles) - Offer #${offerId} - Fixed 500 PKR`
       }, { transaction: t });
-      console.log(`âœ… Support transaction created: ${usedSupportBubbles} bubbles`);
+      console.log(`✅ Support transaction created: ${usedSupportBubbles} bubbles`);
     }
 
     // Create/Update OfferRequest record
@@ -789,7 +789,7 @@ if (usedGiveawayBubbles > 0) {
       existingRequest.redeemed = true;
       existingRequest.adminNotes = `Redeemed: ${usedGiveawayBubbles} giveaway + ${usedSupportBubbles} support = ${totalUsed} bubbles for FIXED PKR ${FIXED_PRICE} offer.`;
       await existingRequest.save({ transaction: t });
-      console.log(`âœ… Updated existing offer request #${existingRequest.id}`);
+      console.log(`✅ Updated existing offer request #${existingRequest.id}`);
     } else {
       // Create new request
       await OfferRequest.create({
@@ -800,14 +800,14 @@ if (usedGiveawayBubbles > 0) {
         scheduledTime: new Date().toTimeString().split(' ')[0],
         status: 'completed',
         redeemed: true,
-        totalAmount: FIXED_PRICE, // âœ… Store fixed amount
+        totalAmount: FIXED_PRICE, // ✅ Store fixed amount
         adminNotes: `Blue Button - Fixed 500 PKR Redemption: ${usedGiveawayBubbles} giveaway + ${usedSupportBubbles} support = ${totalUsed} bubbles for PKR ${FIXED_PRICE} offer.`
       }, { transaction: t });
-      console.log(`âœ… Created new offer request with fixed 500 PKR`);
+      console.log(`✅ Created new offer request with fixed 500 PKR`);
     }
 
     await t.commit();
-    console.log('âœ… Transaction committed successfully');
+    console.log('✅ Transaction committed successfully');
 
     // Calculate percentages
     const giveawayPercentage = Math.round((usedGiveawayBubbles / FIXED_PRICE) * 100);
@@ -826,7 +826,7 @@ if (usedGiveawayBubbles > 0) {
         offerId,
         brandId,
         category,
-        price: FIXED_PRICE, // âœ… Return fixed price
+        price: FIXED_PRICE, // ✅ Return fixed price
         usedGiveawayBubbles,
         usedSupportBubbles,
         totalUsed,
@@ -840,7 +840,7 @@ if (usedGiveawayBubbles > 0) {
 
   } catch (error) {
     await t.rollback();
-    console.error('âŒ REDEMPTION ERROR:', error);
+    console.error('❌ REDEMPTION ERROR:', error);
     console.error('Error stack:', error.stack);
     res.status(400).json({ 
       success: false,
@@ -855,7 +855,7 @@ if (usedGiveawayBubbles > 0) {
 //   const { offerId, brandId, category, price } = req.body;
 //   const userId = req.user.id;
 
-//   console.log('\nðŸŽ¯ === OFFER REDEMPTION REQUEST ===');
+//   console.log('\n🎯 === OFFER REDEMPTION REQUEST ===');
 //   console.log('User ID:', userId);
 //   console.log('Offer ID:', offerId);
 //   console.log('Brand ID:', brandId);
@@ -865,7 +865,7 @@ if (usedGiveawayBubbles > 0) {
 
 //   // Validation
 //   if (!offerId || !brandId || !category || !price) {
-//     console.error('âŒ Missing required fields:', { offerId, brandId, category, price });
+//     console.error('❌ Missing required fields:', { offerId, brandId, category, price });
 //     return res.status(400).json({ 
 //       success: false,
 //       message: 'Missing required redemption data',
@@ -914,7 +914,7 @@ if (usedGiveawayBubbles > 0) {
 //       });
 //     }
 
-//     console.log('âœ… Offer and Brand verified');
+//     console.log('✅ Offer and Brand verified');
 
 //     // ============ GIVEAWAY BUBBLES CALCULATION ============
 //     const categoryMap = {
@@ -943,7 +943,7 @@ if (usedGiveawayBubbles > 0) {
 //                                   makeSettingResult[0].allowOnMake === true;
 //         }
 //       } catch (settingError) {
-//         console.log('âš ï¸ Could not check make settings:', settingError.message);
+//         console.log('⚠️ Could not check make settings:', settingError.message);
 //       }
 //     }
 
@@ -984,7 +984,7 @@ if (usedGiveawayBubbles > 0) {
 //       const totalUsed = parseInt(usedResult[0]?.totalUsed || 0);
 //       availableGiveawayBubbles = Math.max(0, totalReceived - totalUsed);
       
-//       console.log(`ðŸ’° Giveaway: ${giveawayCategory}, Received: ${totalReceived}, Used: ${totalUsed}, Available: ${availableGiveawayBubbles}`);
+//       console.log(`💰 Giveaway: ${giveawayCategory}, Received: ${totalReceived}, Used: ${totalUsed}, Available: ${availableGiveawayBubbles}`);
 //     }
 
 //     // ============ SUPPORT BUBBLES CALCULATION ============
@@ -1019,7 +1019,7 @@ if (usedGiveawayBubbles > 0) {
 //     const totalSupportUsed = parseInt(usedSupportResult?.totalSupportUsed || 0);
 //     const availableSupportBubbles = Math.max(0, totalSupportReceived - totalSupportUsed);
 
-//     console.log(`ðŸ’° Support: Received: ${totalSupportReceived}, Used: ${totalSupportUsed}, Available: ${availableSupportBubbles}`);
+//     console.log(`💰 Support: Received: ${totalSupportReceived}, Used: ${totalSupportUsed}, Available: ${availableSupportBubbles}`);
 
 //     // ============ REDEMPTION LOGIC (50% Support Minimum) ============
 //     const halfPrice = Math.ceil(price / 2);
@@ -1060,7 +1060,7 @@ if (usedGiveawayBubbles > 0) {
 //     }
 
 //     const totalUsed = usedGiveawayBubbles + usedSupportBubbles;
-//     console.log(`âœ… Redemption: Giveaway=${usedGiveawayBubbles}, Support=${usedSupportBubbles}, Total=${totalUsed}`);
+//     console.log(`✅ Redemption: Giveaway=${usedGiveawayBubbles}, Support=${usedSupportBubbles}, Total=${totalUsed}`);
 
 //     // ============ CREATE TRANSACTIONS ============
     
@@ -1075,7 +1075,7 @@ if (usedGiveawayBubbles > 0) {
 //         giveaway: 1,
 //         description: `${category} Offer Redemption (Giveaway Bubbles) - Offer #${offerId}`
 //       }, { transaction: t });
-//       console.log(`âœ… Giveaway transaction created: ${usedGiveawayBubbles} bubbles`);
+//       console.log(`✅ Giveaway transaction created: ${usedGiveawayBubbles} bubbles`);
 //     }
 
 //     // Record support transaction
@@ -1089,7 +1089,7 @@ if (usedGiveawayBubbles > 0) {
 //         giveaway: 0,
 //         description: `${category} Offer Redemption (Support Bubbles) - Offer #${offerId}`
 //       }, { transaction: t });
-//       console.log(`âœ… Support transaction created: ${usedSupportBubbles} bubbles`);
+//       console.log(`✅ Support transaction created: ${usedSupportBubbles} bubbles`);
 //     }
 
 //     // Create/Update OfferRequest record
@@ -1109,7 +1109,7 @@ if (usedGiveawayBubbles > 0) {
 //       existingRequest.redeemed = true;
 //       existingRequest.adminNotes = `Redeemed: ${usedGiveawayBubbles} giveaway + ${usedSupportBubbles} support = ${totalUsed} bubbles for PKR ${price} offer.`;
 //       await existingRequest.save({ transaction: t });
-//       console.log(`âœ… Updated existing offer request #${existingRequest.id}`);
+//       console.log(`✅ Updated existing offer request #${existingRequest.id}`);
 //     } else {
 //       // Create new request
 //       await OfferRequest.create({
@@ -1122,11 +1122,11 @@ if (usedGiveawayBubbles > 0) {
 //         redeemed: true,
 //         adminNotes: `Redeemed: ${usedGiveawayBubbles} giveaway + ${usedSupportBubbles} support = ${totalUsed} bubbles for PKR ${price} offer.`
 //       }, { transaction: t });
-//       console.log(`âœ… Created new offer request`);
+//       console.log(`✅ Created new offer request`);
 //     }
 
 //     await t.commit();
-//     console.log('âœ… Transaction committed successfully');
+//     console.log('✅ Transaction committed successfully');
 
 //     // Calculate percentages
 //     const giveawayPercentage = Math.round((usedGiveawayBubbles / price) * 100);
@@ -1159,7 +1159,7 @@ if (usedGiveawayBubbles > 0) {
 
 //   } catch (error) {
 //     await t.rollback();
-//     console.error('âŒ REDEMPTION ERROR:', error);
+//     console.error('❌ REDEMPTION ERROR:', error);
 //     console.error('Error stack:', error.stack);
 //     res.status(400).json({ 
 //       success: false,
@@ -1225,7 +1225,7 @@ router.get('/my-redemptions', auth, async (req, res) => {
 router.get('/my-support-bubbles', async (req, res) => {
   try {
     const userId = req.user.id;
-    console.log(`\nðŸ’° GETTING SUPPORT BUBBLES FOR USER: ${userId}`);
+    console.log(`\n💰 GETTING SUPPORT BUBBLES FOR USER: ${userId}`);
     
     // Query to get ALL support transactions where this user is the receiver
     const supportTransactions = await sequelize.query(`
@@ -1296,7 +1296,7 @@ router.get('/my-support-bubbles', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('âŒ Get support bubbles error:', error);
+    console.error('❌ Get support bubbles error:', error);
     res.status(400).json({ 
       success: false,
       message: error.message || 'Failed to get support bubbles',
@@ -1324,7 +1324,7 @@ router.get('/support-bubbles-for-redemption', auth, async (req, res) => {
 
     const totalSupportReceived = parseInt(supportReceivedResult?.totalSupportReceived || 0);
 
-    // âœ… FIXED: Removed description filter - giveaway=0 already means support bubbles
+    // ✅ FIXED: Removed description filter - giveaway=0 already means support bubbles
     const [supportUsedResult] = await sequelize.query(`
       SELECT SUM(bubbleAmount) as totalSupportUsed
       FROM bubble_transactions
@@ -1362,7 +1362,7 @@ router.get('/support-bubbles-for-redemption', auth, async (req, res) => {
 router.get('/all-giveaway-bubbles', auth, async (req, res) => {
   try {
     const userId = req.user.id;
-    console.log(`\nðŸ’° Getting ALL giveaway bubbles for user ${userId}`);
+    console.log(`\n💰 Getting ALL giveaway bubbles for user ${userId}`);
 
     const giveawayCategories = ['Grocery', 'Medical', 'Education'];
     const result = {
@@ -1398,7 +1398,7 @@ router.get('/all-giveaway-bubbles', auth, async (req, res) => {
       const receivedResult = await BubbleTransaction.findAll({
   where: {
     toUserId: userId,
-    type: { [Op.ne]: 'offer_redemption' },  // â† ADD THIS LINE
+    type: { [Op.ne]: 'offer_redemption' },  // ← ADD THIS LINE
     [Op.or]: [
             { description: `${giveawayCategory} Giveaway Distribution` },
             { description: `${giveawayCategory} Giveaway Reward` },
@@ -1449,7 +1449,7 @@ router.get('/all-giveaway-bubbles', auth, async (req, res) => {
       console.log(`${giveawayCategory}: Received=${totalReceived}, Used=${totalUsed}, Available=${result[categoryKey].available}, Allowed=${allowedOnMake}`);
     }
 
-    console.log('ðŸ’° Giveaway bubbles breakdown:', result);
+    console.log('💰 Giveaway bubbles breakdown:', result);
 
     res.json({
       success: true,
@@ -1482,10 +1482,10 @@ router.post('/request-admin-support', auth, async (req, res) => {
   const t = await sequelize.transaction();
   
   try {
-    const { offerId, brandId, category, price } = req.body; // âœ… Accept price from frontend
+    const { offerId, brandId, category, price } = req.body; // ✅ Accept price from frontend
     const userId = req.user.id;
     
-    // âœ… Validate price (must be multiple of 500)
+    // ✅ Validate price (must be multiple of 500)
     if (!price || price <= 0 || price % 500 !== 0) {
       await t.rollback();
       return res.status(400).json({ 
@@ -1534,7 +1534,7 @@ router.post('/request-admin-support', auth, async (req, res) => {
 
     const totalSupportReceived = parseInt(supportReceivedResult?.totalSupportReceived || 0);
 
-    // âœ… FIXED: Removed description filter - giveaway=0 already means support bubbles
+    // ✅ FIXED: Removed description filter - giveaway=0 already means support bubbles
     const [supportUsedResult] = await sequelize.query(`
       SELECT SUM(bubbleAmount) as totalSupportUsed
       FROM bubble_transactions
@@ -1553,7 +1553,7 @@ router.post('/request-admin-support', auth, async (req, res) => {
 
     console.log(`Support check: Received=${totalSupportReceived}, Used=${totalSupportUsed}, Available=${availableSupportBubbles}`);
 
-    // âœ… FIXED: Use 'price' not 'fixedPrice'
+    // ✅ FIXED: Use 'price' not 'fixedPrice'
     if (availableSupportBubbles < price) {
       await t.rollback();
       return res.status(400).json({
@@ -1566,31 +1566,31 @@ router.post('/request-admin-support', auth, async (req, res) => {
     }
 
     // ============ CREATE SUPPORT TRANSACTION (100% SUPPORT) ============
-    // âœ… FIXED: Use 'price' not 'Price'
+    // ✅ FIXED: Use 'price' not 'Price'
     await BubbleTransaction.create({
       fromUserId: userId,
       toUserId: userId,
-      bubbleAmount: price,  // âœ… FIXED: lowercase 'price'
+      bubbleAmount: price,  // ✅ FIXED: lowercase 'price'
       type: 'offer_redemption',
       status: 'completed',
-      giveaway: 0, // âœ… NO GIVEAWAY
+      giveaway: 0, // ✅ NO GIVEAWAY
       description: `${category} Offer Redemption (Support Bubbles) - Admin Support Request - Offer #${offerId}`
 
     }, { transaction: t });
 
-    console.log(`âœ… Created support transaction: ${price} bubbles (100% support)`);
+    console.log(`✅ Created support transaction: ${price} bubbles (100% support)`);
 
     // Create OfferRequest for admin to review
-    // âœ… FIXED: Use 'price' not 'Price'
+    // ✅ FIXED: Use 'price' not 'Price'
     const offerRequest = await OfferRequest.create({
       userId,
       brandId,
       offerId,
       scheduledDate: new Date(),
       scheduledTime: new Date().toTimeString().split(' ')[0],
-      status: 'pending',
-      redeemed: false,
-      totalAmount: price,  // âœ… FIXED: use 'price'
+      status: 'Pending', // ✅ Mark as completed immediately
+      redeemed: true,
+      totalAmount: price,  // ✅ FIXED: use 'price'
       adminNotes: `Admin Support Request - Fixed amount: PKR ${price}\n` +
                   `Payment: 100% Support Bubbles (${price} support + 0 giveaway)\n` +
                   `Category: ${category}\n` +
@@ -1601,7 +1601,7 @@ router.post('/request-admin-support', auth, async (req, res) => {
     }, { transaction: t });
 
     await t.commit();
-    console.log(`âœ… Admin support request completed: #${offerRequest.id} for ${user.name}`);
+    console.log(`✅ Admin support request completed: #${offerRequest.id} for ${user.name}`);
 
     res.json({
       success: true,
@@ -1611,8 +1611,8 @@ router.post('/request-admin-support', auth, async (req, res) => {
         offerId,
         brandId,
         category,
-        amount: price,  // âœ… FIXED: use 'price'
-        usedSupportBubbles: price,  // âœ… FIXED: use 'price'
+        amount: price,  // ✅ FIXED: use 'price'
+        usedSupportBubbles: price,  // ✅ FIXED: use 'price'
         usedGiveawayBubbles: 0,
         status: 'completed',
         createdAt: offerRequest.createdAt
@@ -1621,7 +1621,7 @@ router.post('/request-admin-support', auth, async (req, res) => {
 
   } catch (error) {
     await t.rollback();
-    console.error('âŒ Admin support request error:', error);
+    console.error('❌ Admin support request error:', error);
     res.status(400).json({ 
       success: false,
       message: error.message || 'Failed to process admin support request' 
@@ -1640,7 +1640,7 @@ router.get('/pending-support-used', auth, async (req, res) => {
   try {
     const userId = req.user.id;
     
-    console.log(`\nðŸ’° Getting pending support bubbles used for user ${userId}`);
+    console.log(`\n💰 Getting pending support bubbles used for user ${userId}`);
     
     // Get total support received FIRST
     const [supportReceivedResult] = await sequelize.query(`
@@ -1749,7 +1749,7 @@ router.get('/pending-support-used', auth, async (req, res) => {
     const totalSupportUsed = totalCompletedSupport + totalPendingSupport;
     const availableSupport = Math.max(0, totalSupportReceived - totalSupportUsed);
     
-    console.log(`ðŸ’° Support Summary:`);
+    console.log(`💰 Support Summary:`);
     console.log(`   Total Received: ${totalSupportReceived}`);
     console.log(`   Completed Used: ${totalCompletedSupport}`);
     console.log(`   Pending Used: ${totalPendingSupport}`);
@@ -1774,7 +1774,7 @@ router.get('/pending-support-used', auth, async (req, res) => {
     });
     
   } catch (error) {
-    console.error('âŒ Get pending support used error:', error);
+    console.error('❌ Get pending support used error:', error);
     res.status(400).json({ 
       success: false,
       message: error.message || 'Failed to get pending support used'
@@ -1791,7 +1791,7 @@ router.post('/complete-offer/:requestId', auth, async (req, res) => {
     const { requestId } = req.params;
     const userId = req.user.id;
     
-    console.log(`\nCompleting offer request ${requestId} for user ${userId}`);
+    console.log(`\n✅ Completing offer request ${requestId} for user ${userId}`);
     
     // Find the offer request
     const offerRequest = await OfferRequest.findByPk(requestId, {
@@ -1832,39 +1832,82 @@ router.post('/complete-offer/:requestId', auth, async (req, res) => {
       });
     }
     
-    // NO BubbleTransaction here - bubbles were already deducted
-    // at selection time in /request-admin-support.
-    // Redeem just flips status: accepted -> completed
-    // This moves the amount from Make tab to Back tab on HomeScreen.
+    // Calculate support bubbles used from admin notes
+    let supportBubblesUsed = 0;
+    if (offerRequest.adminNotes) {
+      if (offerRequest.adminNotes.includes('Admin Support Request - Fixed amount: PKR 500')) {
+        supportBubblesUsed = 250;
+      } else if (offerRequest.adminNotes.includes('Admin Support Request - Fixed amount: PKR 300')) {
+        supportBubblesUsed = 250;
+      } else if (offerRequest.adminNotes.includes('Redeemed:') && offerRequest.adminNotes.includes('support =')) {
+        const match = offerRequest.adminNotes.match(/Redeemed:.*?(\d+)\s*giveaway.*?(\d+)\s*support/);
+        if (match && match[2]) {
+          supportBubblesUsed = parseInt(match[2]) || 0;
+        }
+      }
+    }
+    
+    // Create bubble transaction to record support used
+    if (supportBubblesUsed > 0) {
+      await BubbleTransaction.create({
+        fromUserId: userId,
+        toUserId: userId,  // Self transaction
+        bubbleAmount: supportBubblesUsed,
+        type: 'offer_redemption',
+        status: 'completed',
+        giveaway: 0,
+        description: `Support bubbles used for offer: ${offerRequest.Offer?.title || 'Unknown Offer'}`
+      });
+      
+      console.log(`✅ Created support transaction: ${supportBubblesUsed} bubbles`);
+    }
     
     // Update offer request status to completed
     offerRequest.status = 'completed';
     offerRequest.redeemed = true;
     offerRequest.updatedAt = new Date();
     
-    // Add completion note
+    // Add completion note if not present
     if (!offerRequest.adminNotes.includes('Completed on')) {
       offerRequest.adminNotes += `\n\nCompleted on ${new Date().toLocaleDateString()} at ${new Date().toLocaleTimeString()}`;
     }
     
     await offerRequest.save();
     
-    console.log(`Offer request ${requestId} marked as completed`);
+    console.log(`✅ Offer request ${requestId} marked as completed`);
+    
+    // Get updated totals
+    const [supportUsedResult] = await sequelize.query(`
+      SELECT SUM(bubbleAmount) as totalSupportUsed
+      FROM bubble_transactions
+      WHERE fromUserId = ?
+        AND type = 'offer_redemption'
+        AND giveaway = 0
+        AND description LIKE '%Support Bubbles%'
+        AND status = 'completed'
+    `, {
+      replacements: [userId],
+      type: sequelize.QueryTypes.SELECT
+    });
+    
+    const totalSupportUsed = parseInt(supportUsedResult?.totalSupportUsed || 0);
     
     res.json({
       success: true,
-      message: 'Offer redeemed successfully!',
+      message: `Offer completed successfully. Used ${supportBubblesUsed} support bubbles.`,
       data: {
         requestId: offerRequest.id,
         offerTitle: offerRequest.Offer?.title,
         brandName: offerRequest.Brand?.name,
         status: 'completed',
+        supportBubblesUsed: supportBubblesUsed,
+        totalSupportUsed: totalSupportUsed,
         completedAt: new Date()
       }
     });
     
   } catch (error) {
-    console.error('Complete offer error:', error);
+    console.error('❌ Complete offer error:', error);
     res.status(400).json({ 
       success: false,
       message: error.message || 'Failed to complete offer'
@@ -1942,7 +1985,7 @@ router.post('/refund-admin-support', auth, async (req, res) => {
     const { offerId, brandId, category, price } = req.body;
     const userId = req.user.id;
     
-    console.log('\nðŸ”„ === REFUND ADMIN SUPPORT REQUEST ===');
+    console.log('\n🔄 === REFUND ADMIN SUPPORT REQUEST ===');
     console.log('User ID:', userId);
     console.log('Offer ID:', offerId);
     console.log('Brand ID:', brandId);
@@ -1998,14 +2041,14 @@ router.post('/refund-admin-support', auth, async (req, res) => {
       });
     }
 
-    console.log('âœ… Found transaction to refund:', lastTransaction.id, '| Description:', lastTransaction.description);
+    console.log('✅ Found transaction to refund:', lastTransaction.id, '| Description:', lastTransaction.description);
 
     // ============ DELETE THE BUBBLE TRANSACTION ============
     // Deleting this record reduces "totalSupportUsed" in the support-bubbles-for-redemption query,
     // which automatically increases available support bubbles
     const deletedTxId = lastTransaction.id;
     await lastTransaction.destroy({ transaction: t });
-    console.log('âœ… Deleted BubbleTransaction:', deletedTxId);
+    console.log('✅ Deleted BubbleTransaction:', deletedTxId);
 
     // ============ FIND AND DELETE THE CORRESPONDING OFFER REQUEST ============
     const lastOfferRequest = await OfferRequest.findOne({
@@ -2026,14 +2069,14 @@ router.post('/refund-admin-support', auth, async (req, res) => {
     if (lastOfferRequest) {
       deletedRequestId = lastOfferRequest.id;
       await lastOfferRequest.destroy({ transaction: t });
-      console.log('âœ… Deleted OfferRequest:', deletedRequestId);
+      console.log('✅ Deleted OfferRequest:', deletedRequestId);
     } else {
-      console.log('âš ï¸ No matching OfferRequest found (may already be deleted)');
+      console.log('⚠️ No matching OfferRequest found (may already be deleted)');
     }
 
     // ============ COMMIT THE REFUND ============
     await t.commit();
-    console.log('âœ… Refund committed successfully');
+    console.log('✅ Refund committed successfully');
 
     // ============ CALCULATE UPDATED SUPPORT BUBBLES ============
     // Same query as /support-bubbles-for-redemption
@@ -2065,7 +2108,7 @@ router.post('/refund-admin-support', auth, async (req, res) => {
     const totalSupportUsed = parseInt(supportUsedResult?.totalSupportUsed || 0);
     const availableSupportBubbles = Math.max(0, totalSupportReceived - totalSupportUsed);
 
-    console.log(`âœ… After refund - Support: Received=${totalSupportReceived}, Used=${totalSupportUsed}, Available=${availableSupportBubbles}`);
+    console.log(`✅ After refund - Support: Received=${totalSupportReceived}, Used=${totalSupportUsed}, Available=${availableSupportBubbles}`);
 
     res.json({
       success: true,
@@ -2083,7 +2126,7 @@ router.post('/refund-admin-support', auth, async (req, res) => {
 
   } catch (error) {
     await t.rollback();
-    console.error('âŒ REFUND ERROR:', error);
+    console.error('❌ REFUND ERROR:', error);
     res.status(400).json({ 
       success: false,
       message: error.message || 'Failed to process refund' 

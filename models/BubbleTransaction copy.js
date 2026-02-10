@@ -31,13 +31,13 @@ const BubbleTransaction = sequelize.define('BubbleTransaction', {
       min: 1
     }
   },
-  targetSlotNumber: {
+  targetSlotNumber: {  // ADD THIS
     type: DataTypes.INTEGER,
     allowNull: true,
     comment: 'Which slot this support was intended for'
   },
   type: {
-    type: DataTypes.ENUM('support', 'donation', 'transfer', 'offer_redemption', 'back', 'giveaway_reward'),
+    type: DataTypes.ENUM('support', 'donation', 'transfer'),
     allowNull: false,
     defaultValue: 'support'
   },
@@ -59,12 +59,6 @@ const BubbleTransaction = sequelize.define('BubbleTransaction', {
     type: DataTypes.INTEGER,
     defaultValue: 0,
     comment: 'Number of queue slots opened by this support (100 bubbles = 1 slot)'
-  },
-  giveaway: {
-    type: DataTypes.TINYINT,
-    allowNull: false,
-    defaultValue: 0,
-    comment: '1 = donation to a giveaway, 0 = normal support/transfer'
   }
 }, {
   timestamps: true,

@@ -3142,4 +3142,61 @@ async function updateTopUserFlag(transaction = null) {
   }
 }
 
+// ============================================================
+// ADD THIS TO get.js — BEFORE module.exports = router;
+// ============================================================
+router.get('/my-giveaway-stats', async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const [rows] = await sequelize.query(`
+      SELECT 
+        bt.id,
+        bt.bubbleAmount,
+        bt.description,
+        bt.createdAt,
+        u.name AS fromUserName
+      FROM bubble_transactions bt
+      JOIN users u ON u.id = bt.fromUserId
+      WHERE bt.toUserId = :userId
+        AND bt.status = 'completed'
+        AND (bt.giveaway = 1 OR bt.description LIKE '%Giveaway Reward%')
+      ORDER BY bt.createdAt DESC
+    `, {
+      replacements: { userId }
+    });
+
+    const stats = rows.map(row => {
+      let category = 'General';
+      if (row.description) {
+        const match = row.description.match(/^(Medical|Grocery|Education)/i);
+        if (match) category = match[1];
+      }
+      return {
+        id: row.id,
+        fromUserName: row.fromUserName,
+        bubbleAmount: row.bubbleAmount,
+        category,
+        date: row.createdAt
+      };
+    });
+
+    const totalEarned = stats.reduce((sum, s) => sum + s.bubbleAmount, 0);
+
+    res.json({
+      success: true,
+      totalEarned,
+      count: stats.length,
+      giveaways: stats
+    });
+
+  } catch (error) {
+    console.error('Error fetching giveaway stats:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+
+
 module.exports = router;
