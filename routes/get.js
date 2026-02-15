@@ -2628,6 +2628,9 @@ router.get('/user/bubble-diagnostic', async (req, res) => {
   }
 });
 
+
+
+
 router.get('/back-owed', async (req, res) => {
   try {
     const userId = req.user.id;
@@ -2985,6 +2988,39 @@ for (const cat of categoryDistribution) {
     await t.rollback();
     console.error('❌ Error giving back bubbles:', error);
     res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
+
+
+
+// Get total bubbles returned via "back" transactions
+router.get('/total-back-given', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    const [backResult] = await sequelize.query(`
+      SELECT COALESCE(SUM(bubbleAmount), 0) as totalBackGiven
+      FROM bubble_transactions
+      WHERE fromUserId = :userId
+        AND type = 'back'
+        AND status = 'completed'
+    `, {
+      replacements: { userId },
+      type: sequelize.QueryTypes.SELECT
+    });
+    
+    const totalBackGiven = parseInt(backResult?.totalBackGiven || 0);
+    
+    res.json({
+      success: true,
+      totalBackGiven
+    });
+    
+  } catch (error) {
+    console.error('Error getting total back given:', error);
+    res.status(400).json({ success: false, message: error.message });
   }
 });
 

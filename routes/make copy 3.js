@@ -262,7 +262,7 @@ router.put('/admin/offer/:id/status', auth, async (req, res) => {
     }
     await offerRequest.save();
 
-    const updated = await OfferRequest4.findByPk(id, {
+    const updated = await OfferRequest.findByPk(id, {
       include: [
         {
           model: User,
@@ -533,19 +533,21 @@ const usedResult = await BubbleTransaction.findAll({
 
 // In /redeem-offer endpoint - FIXED VERSION
 router.post('/redeem-offer', auth, async (req, res) => {
-  const { offerId, brandId, category, price } = req.body;
+  const { offerId, brandId, category } = req.body; // âœ… REMOVED price from body
   const userId = req.user.id;
 
-  console.log('\n=== OFFER REDEMPTION REQUEST ===');
+  console.log('\nðŸŽ¯ === OFFER REDEMPTION REQUEST (BLUE BUTTON - 500 PKR FIXED) ===');
   console.log('User ID:', userId);
   console.log('Offer ID:', offerId);
   console.log('Brand ID:', brandId);
   console.log('Category:', category);
-  console.log('Price:', price);
 
-  // Validation
-  if (!offerId || !brandId || !category || !price) {
-    console.error('Missing required fields:', { offerId, brandId, category, price });
+  // âœ… USE FIXED PRICE OF 500 PKR
+  const FIXED_PRICE = 500; // Blue button always uses 500 PKR
+
+  // Validation - removed price check since we use fixed price
+  if (!offerId || !brandId || !category) {
+    console.error('âŒ Missing required fields:', { offerId, brandId, category });
     return res.status(400).json({ 
       success: false,
       message: 'Missing required redemption data',
@@ -553,21 +555,17 @@ router.post('/redeem-offer', auth, async (req, res) => {
         hasOfferId: !!offerId,
         hasBrandId: !!brandId,
         hasCategory: !!category,
-        hasPrice: !!price,
       }
     });
   }
 
-  if (price <= 0) {
-    return res.status(400).json({ 
-      success: false,
-      message: 'Price must be greater than 0' 
-    });
-  }
+  // âœ… Price is always positive (500)
+  console.log('Fixed Price:', FIXED_PRICE);
 
   const t = await sequelize.transaction();
   
   try {
+    // Get user with lock
     const user = await User.findByPk(userId, { 
       transaction: t, 
       lock: t.LOCK.UPDATE 
@@ -581,6 +579,7 @@ router.post('/redeem-offer', auth, async (req, res) => {
       });
     }
 
+    // Verify offer and brand exist
     const offer = await Offer.findByPk(offerId, { transaction: t });
     const brand = await Brand.findByPk(brandId, { transaction: t });
 
@@ -591,6 +590,9 @@ router.post('/redeem-offer', auth, async (req, res) => {
         message: 'Offer or Brand not found' 
       });
     }
+
+    console.log('âœ… Offer and Brand verified');
+    console.log(`âœ… Using fixed price: ${FIXED_PRICE} PKR`);
 
     // ============ GIVEAWAY BUBBLES CALCULATION ============
     const categoryMap = {
@@ -604,6 +606,7 @@ router.post('/redeem-offer', auth, async (req, res) => {
     const giveawayCategory = categoryMap[category];
     let giveawayAllowedOnMake = true;
     
+    // Check if giveaway is allowed
     if (giveawayCategory) {
       try {
         const [makeSettingResult] = await sequelize.query(`
@@ -618,21 +621,20 @@ router.post('/redeem-offer', auth, async (req, res) => {
                                   makeSettingResult[0].allowOnMake === true;
         }
       } catch (settingError) {
-        console.log('Could not check make settings, defaulting to allowed');
+        console.log('âš ï¸ Could not check make settings:', settingError.message);
       }
     }
 
-    // ✅ FIXED: Get available giveaway bubbles using correct logic
     let availableGiveawayBubbles = 0;
     
     if (giveawayCategory && giveawayAllowedOnMake) {
-      // Get received giveaway bubbles (exclude offer_redemption type)
+      // Get received giveaway bubbles
       const receivedResult = await BubbleTransaction.findAll({
-        where: {
-          toUserId: userId,
-          type: { [Op.ne]: 'offer_redemption' },
-          [Op.or]: [
-            { description: `${giveawayCategory} Giveaway Distribution` },
+  where: {
+    toUserId: userId,
+    type: { [Op.ne]: 'offer_redemption' },  // â† ADD THIS LINE
+    [Op.or]: [
+      { description: `${giveawayCategory} Giveaway Distribution` },
             { description: `${giveawayCategory} Giveaway Reward` },
             { description: { [Op.like]: `%${giveawayCategory} Giveaway%` } }
           ],
@@ -657,16 +659,16 @@ router.post('/redeem-offer', auth, async (req, res) => {
         transaction: t
       });
 
-      const totalGiveawayReceived = parseInt(receivedResult[0]?.totalReceived || 0);
-      const totalGiveawayUsed = parseInt(usedResult[0]?.totalUsed || 0);
-      availableGiveawayBubbles = Math.max(0, totalGiveawayReceived - totalGiveawayUsed);
+      const totalReceived = parseInt(receivedResult[0]?.totalReceived || 0);
+      const totalUsed = parseInt(usedResult[0]?.totalUsed || 0);
+      availableGiveawayBubbles = Math.max(0, totalReceived - totalUsed);
       
-      console.log(`Giveaway: ${giveawayCategory}, Received: ${totalGiveawayReceived}, Used: ${totalGiveawayUsed}, Available: ${availableGiveawayBubbles}`);
+      console.log(`ðŸ’° Giveaway: ${giveawayCategory}, Received: ${totalReceived}, Used: ${totalUsed}, Available: ${availableGiveawayBubbles}`);
     }
 
     // ============ SUPPORT BUBBLES CALCULATION ============
     const [supportResult] = await sequelize.query(`
-      SELECT COALESCE(SUM(bubbleAmount), 0) as totalSupportReceived
+      SELECT SUM(bubbleAmount) as totalSupportReceived
       FROM bubble_transactions
       WHERE toUserId = ?
         AND type = 'support'
@@ -696,10 +698,10 @@ router.post('/redeem-offer', auth, async (req, res) => {
     const totalSupportUsed = parseInt(usedSupportResult?.totalSupportUsed || 0);
     const availableSupportBubbles = Math.max(0, totalSupportReceived - totalSupportUsed);
 
-    console.log(`Support: Received: ${totalSupportReceived}, Used: ${totalSupportUsed}, Available: ${availableSupportBubbles}`);
+    console.log(`ðŸ’° Support: Received: ${totalSupportReceived}, Used: ${totalSupportUsed}, Available: ${availableSupportBubbles}`);
 
     // ============ REDEMPTION LOGIC (50% Support Minimum) ============
-    const halfPrice = Math.ceil(price / 2);
+    const halfPrice = Math.ceil(FIXED_PRICE / 2); // âœ… Use FIXED_PRICE (250)
 
     // RULE 1: Support must be at least 50%
     if (availableSupportBubbles < halfPrice) {
@@ -710,22 +712,19 @@ router.post('/redeem-offer', auth, async (req, res) => {
         required: halfPrice,
         available: availableSupportBubbles,
         shortfall: halfPrice - availableSupportBubbles,
-        price: price
+        price: FIXED_PRICE // âœ… Use FIXED_PRICE
       });
     }
 
-    // RULE 2: Giveaway covers up to 50% (rounded DOWN to nearest 5)
+    // RULE 2: Giveaway covers up to 50%
     let usedGiveawayBubbles = 0;
     if (giveawayAllowedOnMake && availableGiveawayBubbles > 0) {
-      const maxGiveawayAllowed = Math.floor(price / 2); // Max 50% of price (floor for max giveaway limit)
-      const rawGiveaway = Math.min(availableGiveawayBubbles, maxGiveawayAllowed);
-      // ✅ Round DOWN to nearest multiple of 5
-      usedGiveawayBubbles = Math.floor(rawGiveaway / 5) * 5;
-      console.log(`Giveaway rounding: raw=${rawGiveaway}, maxAllowed=${maxGiveawayAllowed}, rounded=${usedGiveawayBubbles}`);
+      usedGiveawayBubbles = Math.min(availableGiveawayBubbles, halfPrice);
     }
 
-    // ✅ FIXED: RULE 3: Support covers the remaining amount (price - giveaway used)
-    const usedSupportBubbles = price - usedGiveawayBubbles;
+    // RULE 3: Support covers 50% + any giveaway shortfall
+    const giveawayShortfall = halfPrice - usedGiveawayBubbles;
+    const usedSupportBubbles = halfPrice + giveawayShortfall;
 
     // Final validation
     if (availableSupportBubbles < usedSupportBubbles) {
@@ -740,23 +739,26 @@ router.post('/redeem-offer', auth, async (req, res) => {
     }
 
     const totalUsed = usedGiveawayBubbles + usedSupportBubbles;
-    console.log(`Redemption: Giveaway=${usedGiveawayBubbles}, Support=${usedSupportBubbles}, Total=${totalUsed}`);
+    console.log(`âœ… Redemption: Giveaway=${usedGiveawayBubbles}, Support=${usedSupportBubbles}, Total=${totalUsed}`);
 
     // ============ CREATE TRANSACTIONS ============
     
-    if (usedGiveawayBubbles > 0) {
-      await BubbleTransaction.create({
-        fromUserId: userId,
-        toUserId: userId,
-        bubbleAmount: usedGiveawayBubbles,
-        type: 'offer_redemption',
-        status: 'completed',
-        giveaway: 1,
-        description: `${giveawayCategory} Giveaway Redemption - ${category} Offer #${offerId} - PKR ${price}`
-      }, { transaction: t });
-      console.log(`Giveaway transaction created: ${usedGiveawayBubbles} bubbles`);
-    }
+    // Record giveaway transaction (if used)
+    // Record giveaway transaction (if used)
+if (usedGiveawayBubbles > 0) {
+  await BubbleTransaction.create({
+    fromUserId: userId,
+    toUserId: userId,
+    bubbleAmount: usedGiveawayBubbles,
+    type: 'offer_redemption',
+    status: 'completed',
+    giveaway: 1,
+    description: `${giveawayCategory} Giveaway Redemption - ${category} Offer #${offerId} - Fixed 500 PKR` // âœ… FIXED
+  }, { transaction: t });
+  console.log(`âœ… Giveaway transaction created: ${usedGiveawayBubbles} bubbles`);
+}
 
+    // Record support transaction
     if (usedSupportBubbles > 0) {
       await BubbleTransaction.create({
         fromUserId: userId,
@@ -765,9 +767,9 @@ router.post('/redeem-offer', auth, async (req, res) => {
         type: 'offer_redemption',
         status: 'completed',
         giveaway: 0,
-        description: `${category} Offer Redemption (Support Bubbles) - Offer #${offerId} - PKR ${price}`
+        description: `${category} Offer Redemption (Support Bubbles) - Offer #${offerId} - Fixed 500 PKR`
       }, { transaction: t });
-      console.log(`Support transaction created: ${usedSupportBubbles} bubbles`);
+      console.log(`âœ… Support transaction created: ${usedSupportBubbles} bubbles`);
     }
 
     // Create/Update OfferRequest record
@@ -782,11 +784,14 @@ router.post('/redeem-offer', auth, async (req, res) => {
     });
 
     if (existingRequest) {
+      // Update existing request
       existingRequest.status = 'completed';
       existingRequest.redeemed = true;
-      existingRequest.adminNotes = `Redeemed: ${usedGiveawayBubbles} giveaway + ${usedSupportBubbles} support = ${totalUsed} bubbles for PKR ${price} offer.`;
+      existingRequest.adminNotes = `Redeemed: ${usedGiveawayBubbles} giveaway + ${usedSupportBubbles} support = ${totalUsed} bubbles for FIXED PKR ${FIXED_PRICE} offer.`;
       await existingRequest.save({ transaction: t });
+      console.log(`âœ… Updated existing offer request #${existingRequest.id}`);
     } else {
+      // Create new request
       await OfferRequest.create({
         userId,
         brandId,
@@ -795,17 +800,20 @@ router.post('/redeem-offer', auth, async (req, res) => {
         scheduledTime: new Date().toTimeString().split(' ')[0],
         status: 'completed',
         redeemed: true,
-        totalAmount: price,
-        adminNotes: `Redemption: ${usedGiveawayBubbles} giveaway + ${usedSupportBubbles} support = ${totalUsed} bubbles for PKR ${price} offer.`
+        totalAmount: FIXED_PRICE, // âœ… Store fixed amount
+        adminNotes: `Blue Button - Fixed 500 PKR Redemption: ${usedGiveawayBubbles} giveaway + ${usedSupportBubbles} support = ${totalUsed} bubbles for PKR ${FIXED_PRICE} offer.`
       }, { transaction: t });
+      console.log(`âœ… Created new offer request with fixed 500 PKR`);
     }
 
     await t.commit();
+    console.log('âœ… Transaction committed successfully');
 
-    const giveawayPercentage = Math.round((usedGiveawayBubbles / price) * 100);
-    const supportPercentage = Math.round((usedSupportBubbles / price) * 100);
+    // Calculate percentages
+    const giveawayPercentage = Math.round((usedGiveawayBubbles / FIXED_PRICE) * 100);
+    const supportPercentage = Math.round((usedSupportBubbles / FIXED_PRICE) * 100);
 
-    let responseMessage = `Offer redeemed successfully! Used ${usedGiveawayBubbles} giveaway (${giveawayPercentage}%) + ${usedSupportBubbles} support (${supportPercentage}%) bubbles for PKR ${price}.`;
+    let responseMessage = `Offer redeemed successfully! Used ${usedGiveawayBubbles} giveaway (${giveawayPercentage}%) + ${usedSupportBubbles} support (${supportPercentage}%) bubbles for fixed 500 PKR.`;
 
     if (!giveawayAllowedOnMake && giveawayCategory) {
       responseMessage += ` (${giveawayCategory} giveaway bubbles blocked by admin)`;
@@ -818,7 +826,7 @@ router.post('/redeem-offer', auth, async (req, res) => {
         offerId,
         brandId,
         category,
-        price: price,
+        price: FIXED_PRICE, // âœ… Return fixed price
         usedGiveawayBubbles,
         usedSupportBubbles,
         totalUsed,
@@ -832,10 +840,12 @@ router.post('/redeem-offer', auth, async (req, res) => {
 
   } catch (error) {
     await t.rollback();
-    console.error('Redemption error:', error);
-    res.status(500).json({
+    console.error('âŒ REDEMPTION ERROR:', error);
+    console.error('Error stack:', error.stack);
+    res.status(400).json({ 
       success: false,
-      message: error.message || 'Redemption failed'
+      message: error.message || 'Redemption failed',
+      error: error.toString()
     });
   }
 });
@@ -1158,7 +1168,7 @@ router.post('/redeem-offer', auth, async (req, res) => {
 //     });
 //   }
 // });
- 
+
 router.get('/my-redemptions', auth, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -1295,15 +1305,12 @@ router.get('/my-support-bubbles', async (req, res) => {
   }
 });
 
-
-
-
 // Add this endpoint before module.exports
+
 router.get('/support-bubbles-for-redemption', auth, async (req, res) => {
   try {
     const userId = req.user.id;
     
-    // Get total support RECEIVED
     const [supportReceivedResult] = await sequelize.query(`
       SELECT SUM(bubbleAmount) as totalSupportReceived
       FROM bubble_transactions
@@ -1317,7 +1324,7 @@ router.get('/support-bubbles-for-redemption', auth, async (req, res) => {
 
     const totalSupportReceived = parseInt(supportReceivedResult?.totalSupportReceived || 0);
 
-    // Get total support USED (in offer redemptions)
+    // âœ… FIXED: Removed description filter - giveaway=0 already means support bubbles
     const [supportUsedResult] = await sequelize.query(`
       SELECT SUM(bubbleAmount) as totalSupportUsed
       FROM bubble_transactions
@@ -1333,22 +1340,10 @@ router.get('/support-bubbles-for-redemption', auth, async (req, res) => {
     const totalSupportUsed = parseInt(supportUsedResult?.totalSupportUsed || 0);
     const availableSupportBubbles = Math.max(0, totalSupportReceived - totalSupportUsed);
 
-    // ✅ NEW: Calculate 80% of support used for Back screen display
-    // Example: If 600 bubbles used in Make, Back shows 600 × 0.8 = 480
-    const [pendingSupportResult] = await sequelize.query(`
-  SELECT COUNT(*) * 500 as pendingSupport
-  FROM offerrequests
-  WHERE userId = ? AND status IN ('pending' , 'accepted') AND redeemed = 0
-`, { replacements: [userId], type: sequelize.QueryTypes.SELECT });
-
-const pendingSupport = parseInt(pendingSupportResult?.pendingSupport || 0);
-const supportUsedForBack = Math.floor((totalSupportUsed - pendingSupport) * 0.8);
-
     res.json({
       success: true,
       totalSupportReceived,
-      totalSupportUsed,              // Full amount used in Make
-      supportUsedForBack,            // ✅ NEW: 80% amount for Back display
+      totalSupportUsed,
       availableSupportBubbles,
       summary: `You have ${availableSupportBubbles} support bubbles available for redemption.`
     });
@@ -1360,467 +1355,6 @@ const supportUsedForBack = Math.floor((totalSupportUsed - pendingSupport) * 0.8)
     });
   }
 });
-
-
-
-// ============================================================
-// ADD THESE ROUTES TO routes/make.js (before module.exports = router;)
-// ============================================================
-
-// ==================== BACK SCREEN ENDPOINTS ====================
-
-// Get bubbles owed (for Back screen)
-router.get('/back-owed', auth, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    console.log('\n💸 /back-owed called for user:', userId);
-
-    // Get total support used
-    const [supportUsedResult] = await sequelize.query(`
-      SELECT COALESCE(SUM(bubbleAmount), 0) as totalSupportUsed
-      FROM bubble_transactions
-      WHERE fromUserId = ?
-        AND type = 'offer_redemption'
-        AND giveaway = 0
-        AND status = 'completed'
-    `, {
-      replacements: [userId],
-      type: sequelize.QueryTypes.SELECT
-    });
-
-    const totalSupportUsed = parseInt(supportUsedResult?.totalSupportUsed || 0);
-
-    // ✅ FIXED: Get pending AND accepted support (not yet redeemed)
-    const [pendingSupportResult] = await sequelize.query(`
-      SELECT COUNT(*) * 500 as pendingSupport
-      FROM offerrequests
-      WHERE userId = ? AND status IN ('pending', 'accepted') AND redeemed = 0
-    `, { replacements: [userId], type: sequelize.QueryTypes.SELECT });
-
-    const pendingSupport = parseInt(pendingSupportResult?.pendingSupport || 0);
-    
-    // ✅ FIXED: Only count completed (redeemed) usage
-    const completedSupportUsed = Math.max(0, totalSupportUsed - pendingSupport);
-    const totalOwed = Math.floor(completedSupportUsed * 0.8);
-
-    // Get returned
-    const [returnedResult] = await sequelize.query(`
-      SELECT COALESCE(SUM(bubbleAmount), 0) as totalReturned
-      FROM bubble_transactions
-      WHERE fromUserId = ?
-        AND type = 'back'
-        AND status = 'completed'
-    `, {
-      replacements: [userId],
-      type: sequelize.QueryTypes.SELECT
-    });
-
-    const totalReturned = parseInt(returnedResult?.totalReturned || 0);
-    const currentlyOwed = Math.max(0, totalOwed - totalReturned);
-
-    console.log('💸 Back-Owed:', {
-      totalSupportUsed,
-      pendingSupport,
-      completedSupportUsed,
-      totalOwed,
-      totalReturned,
-      currentlyOwed
-    });
-
-    const data = currentlyOwed > 0 ? [{
-      id: 'total',
-      name: 'All Supporters',
-      received: totalOwed,
-      returned: totalReturned,
-      owed: currentlyOwed
-    }] : [];
-
-    res.json({ success: true, data });
-  } catch (error) {
-    console.error('Error fetching owed bubbles:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// Give bubbles back (for Back screen)
-router.post('/give-back', auth, async (req, res) => {
-  const t = await sequelize.transaction();
-  
-  try {
-    const { bubbleAmount } = req.body;
-    const fromUserId = req.user.id;
-
-    console.log('\n💸 ==================== GIVE-BACK REQUEST ====================');
-    console.log(`   User ID: ${fromUserId}`);
-    console.log(`   Amount: ${bubbleAmount}`);
-
-    if (!bubbleAmount || bubbleAmount <= 0) {
-      await t.rollback();
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Invalid bubble amount' 
-      });
-    }
-
-    const fromUser = await User.findByPk(fromUserId, { transaction: t });
-    if (!fromUser) {
-      await t.rollback();
-      return res.status(400).json({ success: false, message: 'User not found' });
-    }
-    
-    if (fromUser.bubblesCount < bubbleAmount) {
-      await t.rollback();
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Insufficient bubbles' 
-      });
-    }
-    
-    // Calculate how much user owes based on Make usage
-    const [supportUsedResult] = await sequelize.query(`
-      SELECT COALESCE(SUM(bubbleAmount), 0) as totalSupportUsed
-      FROM bubble_transactions
-      WHERE fromUserId = ?
-        AND type = 'offer_redemption'
-        AND giveaway = 0
-        AND status = 'completed'
-    `, {
-      replacements: [fromUserId],
-      type: sequelize.QueryTypes.SELECT,
-      transaction: t
-    });
-    
-    const totalSupportUsed = parseInt(supportUsedResult?.totalSupportUsed || 0);
-    const totalOwedFromMake = Math.floor(totalSupportUsed * 0.8);
-    
-    // Check how much user has already returned
-    const [returnedResult] = await sequelize.query(`
-      SELECT COALESCE(SUM(bubbleAmount), 0) as totalReturned
-      FROM bubble_transactions
-      WHERE fromUserId = ?
-        AND type = 'back'
-        AND status = 'completed'
-    `, {
-      replacements: [fromUserId],
-      type: sequelize.QueryTypes.SELECT,
-      transaction: t
-    });
-    
-    const totalReturned = parseInt(returnedResult?.totalReturned || 0);
-    const actualOwed = Math.max(0, totalOwedFromMake - totalReturned);
-    
-    if (actualOwed <= 0) {
-      await t.rollback();
-      return res.status(400).json({ 
-        success: false, 
-        message: 'No bubbles owed' 
-      });
-    }
-
-    const amountToGiveBack = Math.min(bubbleAmount, actualOwed);
-
-    // ========== DEDUCT BUBBLES FROM USER ==========
-    await fromUser.update({ 
-      bubblesCount: fromUser.bubblesCount - amountToGiveBack 
-    }, { transaction: t });
-
-    // ========== CREATE BACK TRANSACTION ==========
-    const bubbleTransaction = await BubbleTransaction.create({
-      fromUserId,
-      toUserId: fromUserId,
-      bubbleAmount: amountToGiveBack,
-      type: 'back',
-      status: 'completed',
-      description: `Returned ${amountToGiveBack} bubbles`
-    }, { transaction: t });
-
-    console.log(`   ✅ Created back transaction: ${bubbleTransaction.id}`);
-
-    // ========== GET ALL ACTIVE GIVEAWAYS ==========
-    const [activeGiveaways] = await sequelize.query(`
-      SELECT id, category, percentagePerUser, holdAmount, setByAdminId
-      FROM giveaways 
-      WHERE distributed = 0 
-        AND isActive = 1
-      ORDER BY category ASC
-    `, { transaction: t });
-
-    let totalRewardGiven = 0;
-    const rewardsBreakdown = [];
-
-    if (activeGiveaways.length > 0) {
-      const percentagePerUser = parseFloat(activeGiveaways[0].percentagePerUser) || 25;
-      const totalReward = Math.floor(amountToGiveBack * (percentagePerUser / 100));
-      
-      console.log(`   💰 Total reward to distribute: ${totalReward} (${percentagePerUser}% of ${amountToGiveBack})`);
-
-      if (totalReward > 0) {
-        const categoryCount = activeGiveaways.length;
-        const baseAmount = Math.floor(totalReward / categoryCount);
-        let remainder = totalReward - (baseAmount * categoryCount);
-
-        const categoryDistribution = activeGiveaways.map((g, index) => ({
-          id: g.id,
-          category: g.category,
-          holdAmount: parseInt(g.holdAmount) || 0,
-          adminId: g.setByAdminId || 1,
-          targetAmount: baseAmount + (index < remainder ? 1 : 0),
-          actualAmount: 0,
-          deficit: 0
-        }));
-
-        let iterations = 0;
-        const maxIterations = 10;
-        
-        while (iterations < maxIterations) {
-          iterations++;
-          let totalDeficit = 0;
-          let totalSurplus = 0;
-          const surplusCategories = [];
-
-          for (const cat of categoryDistribution) {
-            const canGive = Math.min(cat.targetAmount, cat.holdAmount);
-            cat.actualAmount = canGive;
-            cat.deficit = cat.targetAmount - canGive;
-            
-            if (cat.deficit > 0) {
-              totalDeficit += cat.deficit;
-            }
-            
-            const surplusCapacity = cat.holdAmount - cat.actualAmount;
-            if (surplusCapacity > 0) {
-              surplusCategories.push({ cat, surplusCapacity });
-              totalSurplus += surplusCapacity;
-            }
-          }
-
-          if (totalDeficit === 0) break;
-          if (totalSurplus === 0) break;
-
-          let remainingDeficit = totalDeficit;
-          
-          for (const { cat, surplusCapacity } of surplusCategories) {
-            if (remainingDeficit <= 0) break;
-            const takeFromThis = Math.min(surplusCapacity, remainingDeficit);
-            cat.targetAmount += takeFromThis;
-            remainingDeficit -= takeFromThis;
-          }
-
-          for (const cat of categoryDistribution) {
-            if (cat.deficit > 0) {
-              cat.targetAmount = cat.holdAmount;
-            }
-          }
-        }
-
-        for (const cat of categoryDistribution) {
-          if (cat.actualAmount > 0) {
-            await sequelize.query(`
-              UPDATE giveaways 
-              SET holdAmount = holdAmount - :amount,
-                  totalAmount = totalAmount - :amount,
-                  updatedAt = NOW()
-              WHERE id = :giveawayId
-            `, {
-              replacements: { amount: cat.actualAmount, giveawayId: cat.id },
-              transaction: t
-            });
-
-            const [existingReward] = await sequelize.query(`
-              SELECT id FROM user_giveaway_rewards
-              WHERE userId = :userId AND category = :category
-            `, {
-              replacements: { userId: fromUserId, category: cat.category },
-              transaction: t
-            });
-
-            if (existingReward && existingReward.length > 0) {
-              await sequelize.query(`
-                UPDATE user_giveaway_rewards 
-                SET lastRewardedGivebackAmount = lastRewardedGivebackAmount + :amountToGiveBack,
-                    totalRewardsReceived = totalRewardsReceived + :reward,
-                    lastRewardedAt = NOW(),
-                    updatedAt = NOW()
-                WHERE userId = :userId AND category = :category
-              `, {
-                replacements: { 
-                  amountToGiveBack: Math.floor(amountToGiveBack / categoryCount), 
-                  reward: cat.actualAmount, 
-                  userId: fromUserId, 
-                  category: cat.category 
-                },
-                transaction: t
-              });
-            } else {
-              await sequelize.query(`
-                INSERT INTO user_giveaway_rewards 
-                  (userId, category, lastRewardedGivebackAmount, totalRewardsReceived, lastRewardedAt, createdAt, updatedAt)
-                VALUES 
-                  (:userId, :category, :amountToGiveBack, :reward, NOW(), NOW(), NOW())
-              `, {
-                replacements: { 
-                  userId: fromUserId, 
-                  category: cat.category, 
-                  amountToGiveBack: Math.floor(amountToGiveBack / categoryCount), 
-                  reward: cat.actualAmount 
-                },
-                transaction: t
-              });
-            }
-
-            await BubbleTransaction.create({
-              fromUserId: cat.adminId,
-              toUserId: fromUserId,
-              bubbleAmount: cat.actualAmount,
-              type: 'giveaway_reward',
-              status: 'completed',
-              giveaway: 1,
-              description: `${cat.category} Giveaway Reward`
-            }, { transaction: t });
-
-            totalRewardGiven += cat.actualAmount;
-            rewardsBreakdown.push({
-              category: cat.category,
-              requested: cat.targetAmount,
-              received: cat.actualAmount,
-              remainingHold: cat.holdAmount - cat.actualAmount
-            });
-
-            console.log(`   ✅ ${cat.category}: Gave ${cat.actualAmount} bubbles`);
-          } else {
-            rewardsBreakdown.push({
-              category: cat.category,
-              requested: cat.targetAmount,
-              received: 0,
-              remainingHold: cat.holdAmount
-            });
-          }
-        }
-      }
-    }
-
-    if (totalRewardGiven > 0) {
-      await fromUser.reload({ transaction: t });
-      await fromUser.update({ 
-        bubblesCount: fromUser.bubblesCount + totalRewardGiven 
-      }, { transaction: t });
-    }
-
-    await t.commit();
-
-    const updatedUser = await User.findByPk(fromUserId, {
-      attributes: ['bubblesCount']
-    });
-
-    // Recalculate updated owed amount
-    const newTotalReturned = totalReturned + amountToGiveBack;
-    const newOwed = Math.max(0, totalOwedFromMake - newTotalReturned);
-
-    console.log('   ==================== GIVE-BACK COMPLETE ====================\n');
-
-    res.json({
-      success: true,
-      message: totalRewardGiven > 0 
-        ? `Returned ${amountToGiveBack} bubbles and received ${totalRewardGiven} as giveaway rewards!`
-        : `Returned ${amountToGiveBack} bubbles successfully`,
-      data: {
-        transaction: bubbleTransaction,
-        amountReturned: amountToGiveBack,
-        remainingOwed: newOwed,
-        totalRewardGiven: totalRewardGiven,
-        rewardsBreakdown: rewardsBreakdown,
-        newBalance: updatedUser.bubblesCount
-      }
-    });
-
-  } catch (error) {
-    await t.rollback();
-    console.error('❌ Error giving back bubbles:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// Get support summary (for Back screen display on HomeScreen)
-router.get('/support-summary', auth, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    
-    // Get total support received
-    const [supportReceivedResult] = await sequelize.query(`
-      SELECT COALESCE(SUM(bubbleAmount), 0) as totalSupportReceived
-      FROM bubble_transactions
-      WHERE toUserId = ?
-        AND type = 'support'
-        AND status = 'completed'
-    `, {
-      replacements: [userId],
-      type: sequelize.QueryTypes.SELECT
-    });
-
-    const totalSupportReceived = parseInt(supportReceivedResult?.totalSupportReceived || 0);
-
-    // Get total support used in Make
-    const [supportUsedResult] = await sequelize.query(`
-      SELECT COALESCE(SUM(bubbleAmount), 0) as totalSupportUsed
-      FROM bubble_transactions
-      WHERE fromUserId = ?
-        AND type = 'offer_redemption'
-        AND giveaway = 0
-        AND status = 'completed'
-    `, {
-      replacements: [userId],
-      type: sequelize.QueryTypes.SELECT
-    });
-
-    const totalSupportUsed = parseInt(supportUsedResult?.totalSupportUsed || 0);
-    const availableSupportBubbles = Math.max(0, totalSupportReceived - totalSupportUsed);
-    
-    // Calculate 80% for Back display
-    const supportUsedForBack = Math.floor(totalSupportUsed * 0.8);
-    
-    // Get total returned
-    const [returnedResult] = await sequelize.query(`
-      SELECT COALESCE(SUM(bubbleAmount), 0) as totalReturned
-      FROM bubble_transactions
-      WHERE fromUserId = ?
-        AND type = 'back'
-        AND status = 'completed'
-    `, {
-      replacements: [userId],
-      type: sequelize.QueryTypes.SELECT
-    });
-    
-    const totalReturned = parseInt(returnedResult?.totalReturned || 0);
-    const currentlyOwed = Math.max(0, supportUsedForBack - totalReturned);
-
-    res.json({
-      success: true,
-      totalSupportReceived,
-      totalSupportUsed,
-      availableSupportBubbles,
-      supportUsedForBack,
-      totalReturned,
-      currentlyOwed,
-      summary: {
-        forGet: availableSupportBubbles,
-        forMake: availableSupportBubbles,
-        forBack: currentlyOwed
-      }
-    });
-  } catch (error) {
-    console.error('Get support summary error:', error);
-    res.status(400).json({ success: false, message: error.message });
-  }
-});
-
-
-
-
-
-
-
-
-
 
 // ============================================================
 // NEW: Get ALL giveaway bubbles by category (Grocery, Medical, Education)
