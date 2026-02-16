@@ -2474,28 +2474,30 @@ router.post('/refund-admin-support', auth, async (req, res) => {
     console.log('âœ… Deleted BubbleTransaction:', deletedTxId);
 
     // ============ FIND AND DELETE THE CORRESPONDING OFFER REQUEST ============
-    const lastOfferRequest = await OfferRequest.findOne({
-      where: {
-        userId,
-        offerId,
-        brandId,
-        redeemed: true,
-        adminNotes: {
-          [Op.like]: `%Admin Support Request%`
-        }
-      },
-      order: [['createdAt', 'DESC']],
-      transaction: t
-    });
-
-    let deletedRequestId = null;
-    if (lastOfferRequest) {
-      deletedRequestId = lastOfferRequest.id;
-      await lastOfferRequest.destroy({ transaction: t });
-      console.log('âœ… Deleted OfferRequest:', deletedRequestId);
-    } else {
-      console.log('âš ï¸ No matching OfferRequest found (may already be deleted)');
+    // ============ FIND AND DELETE THE CORRESPONDING OFFER REQUEST ============
+const lastOfferRequest = await OfferRequest.findOne({
+  where: {
+    userId,
+    offerId,
+    brandId,
+    redeemed: false,      // ✅ FIXED: Match non-redeemed requests
+    status: 'pending',    // ✅ ADDED: Only pending status
+    adminNotes: {
+      [Op.like]: `%Admin Support Request%`
     }
+  },
+  order: [['createdAt', 'DESC']],
+  transaction: t
+});
+
+let deletedRequestId = null;
+if (lastOfferRequest) {
+  deletedRequestId = lastOfferRequest.id;
+  await lastOfferRequest.destroy({ transaction: t });
+  console.log('✅ Deleted OfferRequest:', deletedRequestId);
+} else {
+  console.log('⚠️ No matching OfferRequest found (may already be deleted)');
+}
 
     // ============ COMMIT THE REFUND ============
     await t.commit();
